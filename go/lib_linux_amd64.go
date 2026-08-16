@@ -3,6 +3,6 @@
 package anydoc
 
 /*
-#cgo LDFLAGS: -L${SRCDIR}/../target/release -lanydoc_go -lm -lstdc++ -ldl -lpthread
+#cgo LDFLAGS: -lanydoc_go -lm -lstdc++ -ldl -lpthread
 */
 import "C"

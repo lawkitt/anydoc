@@ -10,7 +10,7 @@ before building or testing Go:
 
 ```sh
 cargo build --locked --release -p anydoc-go
-CGO_ENABLED=1 go test ./...
+CGO_ENABLED=1 CGO_LDFLAGS="-L$PWD/target/release" go test ./go/...
 ```
 
 Rust owns successful output buffers; Go copies and frees them in the same cgo
