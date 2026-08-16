@@ -1,0 +1,16 @@
+[package]
+name = "anydoc-go"
+version = "0.1.9"
+edition = "2024"
+rust-version = "1.88"
+description = "Minimal native Go binding for Lawkitt document conversion"
+license = "MIT"
+repository = "https://github.com/lawkitt/anydoc"
+publish = false
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+anydoc = { path = ".." }
+pdf-inspector = "=1.14.2"

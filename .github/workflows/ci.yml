@@ -30,6 +30,23 @@ jobs:
       # are covered by the node and python jobs instead.
       - run: cargo test --locked
 
+  go:
+    name: Go binding (Linux AMD64 glibc)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.88.0
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.0'
+          cache-dependency-path: go/go.mod
+      - run: cargo build --locked --release -p anydoc-go
+      - run: go test ./...
+        working-directory: go
+
   node:
     name: Node bindings
     runs-on: blacksmith-8vcpu-ubuntu-2404

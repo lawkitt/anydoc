@@ -1,0 +1,10 @@
+# Rust/C symbol	numeric outcome	Go sentinel
+OUTCOME_UNSUPPORTED	2	unsupported
+OUTCOME_MALFORMED	3	invalid
+OUTCOME_ENCRYPTED	4	encrypted
+OUTCOME_RESOURCE_LIMIT	5	resource_limit
+OUTCOME_MISSING_PART	6	invalid
+OUTCOME_IO	7	internal
+OUTCOME_INVALID_ARGUMENT	8	invalid_argument
+OUTCOME_SCANNED_ONLY	9	scanned_only
+OUTCOME_PANIC	10	internal

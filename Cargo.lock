@@ -105,6 +105,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "anydoc-go"
+version = "0.1.9"
+dependencies = [
+ "anydoc",
+ "pdf-inspector",
+]
+
+[[package]]
 name = "anydoc-node"
 version = "0.1.0"
 dependencies = [
