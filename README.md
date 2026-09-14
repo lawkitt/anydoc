@@ -197,6 +197,8 @@ anydoc: converted 79 of 80 pages; page 3 needs OCR
 | CSV              | `.csv`                                                     |
 | PDF              | `.pdf`                                                     |
 
+Binary Word (`.doc`) conversion omits deleted revision text and retains inserted text and ordinary strikethrough. It preserves table cell and row boundaries, including empty cells left by deleted text.
+
 ## Benchmark
 
 anydoc is measured against six other converters on 100 real-world documents spanning fourteen formats. Scores run from 0 to 100, higher is better; speed is the median time to convert one document.
