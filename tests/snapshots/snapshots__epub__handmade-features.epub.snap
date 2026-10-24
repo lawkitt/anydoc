@@ -19,20 +19,15 @@ expression: output
 | A3 | B3 |
 
 3. three
-
 2. two
-
 1. one
 
 - a. alpha one
-
 - e. jumps to five
 - f. six
-
 - -1. minus one
 - 0\. zero
 - 1\. one
-
 - 1\. one
 - 0\. zero
 - -1. minus one

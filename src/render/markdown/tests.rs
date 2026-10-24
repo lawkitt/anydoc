@@ -556,7 +556,9 @@ fn roman_and_alpha_markers_render_literally() {
             items: vec![item("double letters")],
         }),
     ]);
-    assert_eq!(md, "- iii. third\n- iv. fourth\n\n- AA. double letters\n");
+    // Both render as `-` items, which CommonMark reads as one list: joined
+    // without a blank line, it stays tight.
+    assert_eq!(md, "- iii. third\n- iv. fourth\n- AA. double letters\n");
 }
 
 #[test]
@@ -837,4 +839,130 @@ fn cell_edge_whitespace_is_trimmed() {
         0,
     )]);
     assert_eq!(md, "|  |  |\n| --- | --- |\n| padded | plain |\n");
+}
+
+fn para(text: &str) -> Block {
+    Block::Paragraph(vec![Inline::plain(text)])
+}
+
+fn list(marker: MarkerKind, start: u64, items: Vec<Vec<Block>>) -> Block {
+    Block::List(List {
+        marker,
+        start,
+        items: items.into_iter().map(|blocks| ListItem { blocks, marker_label: None }).collect(),
+    })
+}
+
+#[test]
+fn a_nested_list_after_its_paragraph_keeps_the_list_tight() {
+    // EN and RU: no blank line between items, and nested levels indent by
+    // the width of the parent's Markdown marker, not of its label.
+    let md = doc(vec![list(
+        MarkerKind::Decimal,
+        1,
+        vec![
+            vec![para("First numbered")],
+            vec![
+                para("Второй пункт"),
+                list(
+                    MarkerKind::LowerAlpha,
+                    1,
+                    vec![
+                        vec![para("подпункт а")],
+                        vec![
+                            para("sub b"),
+                            list(MarkerKind::LowerRoman, 1, vec![vec![para("roman")]]),
+                        ],
+                    ],
+                ),
+            ],
+            vec![para("Третий")],
+        ],
+    )]);
+    assert_eq!(
+        md,
+        "1. First numbered\n2. Второй пункт\n   - a. подпункт а\n   - b. sub b\n     - i. roman\n3. Третий\n"
+    );
+}
+
+#[test]
+fn an_item_with_two_paragraphs_makes_the_list_loose() {
+    let md = doc(vec![list(
+        MarkerKind::Bullet,
+        1,
+        vec![vec![para("Пункт один"), para("second paragraph")], vec![para("two")]],
+    )]);
+    assert_eq!(md, "- Пункт один\n\n  second paragraph\n\n- two\n");
+}
+
+#[test]
+fn blank_lines_inside_a_code_block_do_not_loosen_its_list() {
+    let code = Block::CodeBlock { lang: None, text: "fn a() {}\n\n\nfn b() {}\n".into() };
+    let md = doc(vec![list(MarkerKind::Bullet, 1, vec![vec![code], vec![para("next")]])]);
+    assert_eq!(md, "- ```\n  fn a() {}\n\n\n  fn b() {}\n  ```\n- next\n");
+}
+
+#[test]
+fn adjacent_lists_commonmark_merges_are_joined_tight() {
+    let md = doc(vec![
+        list(MarkerKind::Bullet, 1, vec![vec![para("one")], vec![para("два")]]),
+        list(MarkerKind::UpperRoman, 4, vec![vec![para("four")]]),
+        list(MarkerKind::Decimal, 1, vec![vec![para("numbered")]]),
+        list(MarkerKind::Decimal, 1, vec![vec![para("нумерованный")]]),
+    ]);
+    // Bullets and `- IV.` labels are one list in CommonMark, as are the two
+    // numbered lists; a bullet list and a numbered list are not.
+    assert_eq!(md, "- one\n- два\n- IV. four\n\n1. numbered\n1. нумерованный\n");
+}
+
+#[test]
+fn blank_line_runs_collapse_outside_code_and_math() {
+    let text = "\n \nOne\n\n\n\t\nДва\n```\na\n\n\nb\n```\n$$\nx\n\n\ny\n$$\n\n\n";
+    assert_eq!(
+        super::normalize_blank_lines(text),
+        "One\n\nДва\n```\na\n\n\nb\n```\n$$\nx\n\n\ny\n$$"
+    );
+    // Fences that open a list item or quote are fences too.
+    for text in ["- ```\n  a\n\n\n  b\n  ```", "- $$\n  x\n\n\n  $$"] {
+        assert_eq!(super::normalize_blank_lines(text), text);
+    }
+    assert_eq!(
+        super::normalize_blank_lines("1. > ````\n   > a\n\n\n   > ````\n\n\nafter"),
+        "1. > ````\n   > a\n\n\n   > ````\n\nafter"
+    );
+    // A hyphenated word or a number at a line start is no marker.
+    assert_eq!(super::strip_container_markers("-```"), "-```");
+    assert_eq!(super::strip_container_markers("1.```"), "1.```");
+}
+
+#[test]
+fn a_hyphen_before_a_hard_break_is_the_authors() {
+    // Office formats carry no line-wrap hyphens: soft hyphens are dropped
+    // with the other invisible characters, and a hyphen before an explicit
+    // line break is written by the author, so nothing is joined (EN, RU).
+    let md = doc(vec![Block::Paragraph(vec![
+        Inline::plain("well-"),
+        Inline::LineBreak,
+        Inline::plain("known; что-"),
+        Inline::LineBreak,
+        Inline::plain("то"),
+    ])]);
+    assert_eq!(md, "well-\\\nknown; что-\\\nто\n");
+}
+
+#[test]
+fn adjacent_nested_lists_stay_tight() {
+    let md = doc(vec![list(
+        MarkerKind::Bullet,
+        1,
+        vec![
+            vec![
+                para("outer"),
+                list(MarkerKind::Bullet, 1, vec![vec![para("inner one")]]),
+                list(MarkerKind::LowerAlpha, 1, vec![vec![para("внутренний два")]]),
+            ],
+            vec![para("next")],
+        ],
+    )]);
+    assert_eq!(md, "- outer\n  - inner one\n  - a. внутренний два\n- next\n");
 }
