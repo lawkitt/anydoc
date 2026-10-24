@@ -949,3 +949,20 @@ fn a_hyphen_before_a_hard_break_is_the_authors() {
     ])]);
     assert_eq!(md, "well-\\\nknown; что-\\\nто\n");
 }
+
+#[test]
+fn adjacent_nested_lists_stay_tight() {
+    let md = doc(vec![list(
+        MarkerKind::Bullet,
+        1,
+        vec![
+            vec![
+                para("outer"),
+                list(MarkerKind::Bullet, 1, vec![vec![para("inner one")]]),
+                list(MarkerKind::LowerAlpha, 1, vec![vec![para("внутренний два")]]),
+            ],
+            vec![para("next")],
+        ],
+    )]);
+    assert_eq!(md, "- outer\n  - inner one\n  - a. внутренний два\n- next\n");
+}

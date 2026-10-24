@@ -400,21 +400,46 @@ fn render_list(list: &List, rc: &Ctx) -> Option<(String, bool)> {
 
 /// An item's blocks, and whether they make its list loose. Blocks are
 /// separated by a blank line, which makes the list loose, except a nested
-/// list straight after a paragraph that CommonMark lets interrupt it.
+/// list straight after a paragraph that CommonMark lets interrupt it, and a
+/// tight nested list after one CommonMark merges it with.
 fn render_item_blocks(blocks: &[Block], rc: &Ctx) -> (String, bool) {
     let mut out = String::new();
     let mut loose = false;
     let mut prev: Option<&Block> = None;
+    // The previous nested list's last family and tightness.
+    let mut prev_list: Option<(ListFamily, bool)> = None;
     for block in blocks {
-        let Some(text) = render_block(block, rc) else { continue };
+        let (text, list) = match block {
+            Block::List(list) => match render_list(list, rc) {
+                Some((text, list_loose)) => (
+                    text,
+                    Some((
+                        list_family(list, 0),
+                        list_family(list, list.items.len() - 1),
+                        list_loose,
+                    )),
+                ),
+                None => continue,
+            },
+            _ => match render_block(block, rc) {
+                Some(text) => (text, None),
+                None => continue,
+            },
+        };
         if let Some(prev) = prev {
-            let tight = matches!(prev, Block::Paragraph(_))
+            let after_paragraph = matches!(prev, Block::Paragraph(_))
                 && matches!(block, Block::List(list) if interrupts_paragraph(list, rc));
+            let merges = matches!(
+                (prev_list, list),
+                (Some((last, false)), Some((first, _, false))) if last == first
+            );
+            let tight = after_paragraph || merges;
             out.push_str(if tight { "\n" } else { "\n\n" });
             loose |= !tight;
         }
         out.push_str(&text);
         prev = Some(block);
+        prev_list = list.map(|(_, last, list_loose)| (last, list_loose));
     }
     (out, loose)
 }
