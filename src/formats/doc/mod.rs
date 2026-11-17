@@ -757,9 +757,12 @@ impl Assembler {
                 }
             }
             // Hidden text (sprmCFVanish) is left out and counted. Paragraph,
-            // cell, field and picture marks keep their structure, and a note
-            // reference stays, as in the other Word frontends.
+            // cell, field and picture marks keep their structure, a note
+            // reference stays, and a field instruction is still read (it is
+            // never displayed), as in the other Word frontends.
+            let in_instruction = para.fields.last().is_some_and(|f| !f.in_result);
             if chp.hidden
+                && !in_instruction
                 && !matches!(
                     c,
                     '\r' | '\u{1}' | '\u{7}' | '\u{c}' | '\u{e}' | '\u{13}' | '\u{14}' | '\u{15}'

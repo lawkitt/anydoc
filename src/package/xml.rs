@@ -52,13 +52,13 @@ pub mod ns {
     pub const MATHML: &str = "http://www.w3.org/1998/Math/MathML";
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Node {
     Elem(Element),
     Text(String),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Element {
     /// Resolved namespace URI (interned); `None` for unqualified names.
     pub ns: Option<Rc<str>>,
@@ -67,7 +67,7 @@ pub struct Element {
     pub children: Vec<Node>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Attr {
     pub ns: Option<Rc<str>>,
     pub local: String,
