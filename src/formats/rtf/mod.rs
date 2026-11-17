@@ -804,6 +804,11 @@ impl<'a> Parser<'a> {
             && (self.state.suppress || SUPPRESSED_DESTINATIONS.contains(&word))
         {
             self.flush_comment_pending();
+            if self.state.atn == AtnDest::None {
+                // A fallback skip left over from an earlier comment is spent.
+                self.comment_decoder.skip = 0;
+                self.comment_decoder.surrogate = None;
+            }
             self.state.atn = dest;
             self.comments.open(dest);
         }
@@ -927,6 +932,8 @@ impl<'a> Parser<'a> {
                     self.inlines.push(Inline::LineBreak);
                 }
             }
+            // A comment keeps its tabs; the body renders them as spaces.
+            "tab" if self.comment_reads() => self.push_char('\t'),
             "tab" => self.push_char(' '),
             "emdash" => self.push_char('\u{2014}'),
             "endash" => self.push_char('\u{2013}'),

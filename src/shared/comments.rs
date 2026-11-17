@@ -184,8 +184,10 @@ impl TextSink for Anchors {
             return;
         }
         push_capped(&mut self.innermost().text, text);
+        // Open ranges are bounded in number and size; the total budget is
+        // charged when one closes, so ranges that never close cost nothing.
         for (_, range) in &mut self.open {
-            self.budget.push(range, text, MAX_TEXT_BYTES);
+            push_capped(range, text);
         }
     }
 
@@ -205,7 +207,7 @@ impl TextSink for Anchors {
         }
         for (_, range) in &mut self.open {
             if !range.is_empty() {
-                self.budget.push(range, "\n", MAX_TEXT_BYTES);
+                push_capped(range, "\n");
             }
         }
     }
@@ -223,7 +225,9 @@ impl TextSink for Anchors {
     fn range_end(&mut self, id: &str) {
         if let Some(at) = self.open.iter().position(|(open, _)| open == id) {
             let (id, text) = self.open.remove(at);
-            self.ranges.insert(id, text.trim().to_string());
+            let mut anchor = String::new();
+            self.budget.push(&mut anchor, text.trim(), MAX_TEXT_BYTES);
+            self.ranges.insert(id, anchor);
         }
     }
 

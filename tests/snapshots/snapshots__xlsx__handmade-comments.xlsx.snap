@@ -1,0 +1,8 @@
+---
+source: tests/snapshots.rs
+expression: output
+---
+|  |  |
+| --- | --- |
+| Commented cell |  |
+|  | Noted cell |
