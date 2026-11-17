@@ -454,14 +454,38 @@ pub(super) fn build_table(
         (r1, c1, r2, c2) = (r1.min(mr1), c1.min(mc1), r2.max(mr2), c2.max(mc2));
     }
 
-    let row_map: Vec<u32> = (r1..=r2).filter(|&r| !hidden_row(r)).collect();
-    let col_map: Vec<u32> = (c1..=c2).filter(|&c| !hidden_col(c)).collect();
+    let mut row_map: Vec<u32> = (r1..=r2).filter(|&r| !hidden_row(r)).collect();
+    let mut col_map: Vec<u32> = (c1..=c2).filter(|&c| !hidden_col(c)).collect();
     if row_map.is_empty() || col_map.is_empty() {
         return Ok(None);
     }
     // Charged before materializing, and across the workbook rather than per
     // sheet: the extent comes from cell coordinates, so a handful of cells
     // describes a whole sheet and a handful of sheets multiplies it.
+    let extent = row_map.len() as u64 * col_map.len() as u64;
+    if slots.saturating_add(extent) > limits::MAX_GRID_SLOTS {
+        // A sparse sheet (a lone checksum cell far right of the data, two
+        // blocks a million rows apart) has a huge extent but few cells.
+        // Rather than fail, each run of rows or columns holding nothing
+        // collapses to one empty row or column, which still separates the
+        // blocks. The grid is then bounded by the rows and columns that
+        // hold cells, and a sheet that is still too big fails below. Sheets
+        // within the budget keep every empty row and column.
+        let mut used_rows: Vec<u32> = Vec::with_capacity(cells.len() + 2 * sheet.merges.len());
+        let mut used_cols: Vec<u32> = Vec::with_capacity(cells.len() + 2 * sheet.merges.len());
+        for &(r, c) in cells.keys() {
+            used_rows.push(r);
+            used_cols.push(c);
+        }
+        // A merge keeps its first and last row and column, so it still
+        // spans the gap it covers.
+        for &(mr1, mc1, mr2, mc2) in &sheet.merges {
+            used_rows.extend([mr1, mr2]);
+            used_cols.extend([mc1, mc2]);
+        }
+        row_map = collapse_empty_runs(&row_map, used_rows);
+        col_map = collapse_empty_runs(&col_map, used_cols);
+    }
     *slots = slots.saturating_add(row_map.len() as u64 * col_map.len() as u64);
     if *slots > limits::MAX_GRID_SLOTS {
         return Err(ConvertError::ResourceLimit {
@@ -533,6 +557,27 @@ pub(super) fn build_table(
     }
     table.header_rows = resolve_header_rows(&table, 0);
     Ok(Some(table))
+}
+
+/// The coordinates of `map` (sorted) that are in `used`, plus the first
+/// coordinate of each run of unused ones: a gap of any length becomes one
+/// empty row or column.
+fn collapse_empty_runs(map: &[u32], mut used: Vec<u32>) -> Vec<u32> {
+    used.sort_unstable();
+    used.dedup();
+    let is_used = |x: u32| used.binary_search(&x).is_ok();
+    let mut out = Vec::new();
+    let mut in_gap = false;
+    for &x in map {
+        if is_used(x) {
+            out.push(x);
+            in_gap = false;
+        } else if !in_gap {
+            out.push(x);
+            in_gap = true;
+        }
+    }
+    out
 }
 
 /// Flatten inclusive ranges into a sorted, deduplicated coordinate list.
@@ -987,22 +1032,103 @@ mod tests {
         assert_eq!(texts(table)[0][0], "kept");
     }
 
+    /// A sheet of inline-string cells at the given zero-based positions.
+    fn sparse_sheet(cells: &[(u32, u32, &str)]) -> String {
+        let mut rows: Vec<(u32, String)> = Vec::new();
+        for &(r, c, text) in cells {
+            let mut col = String::new();
+            let mut n = c + 1;
+            while n > 0 {
+                col.insert(0, char::from(b'A' + ((n - 1) % 26) as u8));
+                n = (n - 1) / 26;
+            }
+            let cell = format!(r#"<c r="{col}{}" t="inlineStr"><is><t>{text}</t></is></c>"#, r + 1);
+            match rows.last_mut() {
+                Some((last, body)) if *last == r => body.push_str(&cell),
+                _ => rows.push((r, cell)),
+            }
+        }
+        let rows: String =
+            rows.iter().map(|(r, body)| format!(r#"<row r="{}">{body}</row>"#, r + 1)).collect();
+        format!("<sheetData>{rows}</sheetData>")
+    }
+
     #[test]
-    fn the_grid_budget_spans_the_whole_workbook() {
-        // Two cells at opposite corners describe the whole sheet, so the
-        // extent has to be charged before any position is built.
-        let wb = one_sheet(
-            r#"<sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>a</t></is></c></row><row r="1048576"><c r="XFD1048576" t="inlineStr"><is><t>b</t></is></c></row></sheetData>"#,
+    fn a_lone_cell_far_from_the_data_converts() {
+        // firecrawl/anydoc#156: a checksum cell left near column XEP makes the
+        // extent millions of positions wide. The empty columns between it and
+        // the data collapse to one, so the sheet converts in full.
+        let body = sparse_sheet(&[
+            (0, 0, "Item"),
+            (0, 1, "Cost"),
+            (1, 0, "Pump"),
+            (1, 1, "120"),
+            (2, 0, "Valve"),
+            (2, 1, "34"),
+            (999, 16_369, "154"),
+        ]);
+        let doc = parse(&one_sheet(&body).build()).unwrap();
+        let table = first_table(&doc);
+        assert_eq!(
+            texts(table),
+            [
+                ["Item", "Cost", "", ""],
+                ["Pump", "120", "", ""],
+                ["Valve", "34", "", ""],
+                ["", "", "", ""],
+                ["", "", "", "154"],
+            ]
         );
-        let err = parse(&wb.build()).unwrap_err();
+
+        // Opposite corners of the sheet: the whole sheet in extent, two cells
+        // in content.
+        let body = sparse_sheet(&[(0, 0, "a"), (1_048_575, 16_383, "b")]);
+        let doc = parse(&one_sheet(&body).build()).unwrap();
+        assert_eq!(texts(first_table(&doc)), [["a", "", ""], ["", "", ""], ["", "", "b"]]);
+    }
+
+    #[test]
+    fn sheets_within_the_budget_keep_their_empty_rows_and_columns() {
+        let body = sparse_sheet(&[(0, 0, "a"), (0, 3, "b"), (3, 0, "c")]);
+        let doc = parse(&one_sheet(&body).build()).unwrap();
+        assert_eq!(
+            texts(first_table(&doc)),
+            [["a", "", "", "b"], ["", "", "", ""], ["", "", "", ""], ["c", "", "", ""]]
+        );
+    }
+
+    #[test]
+    fn a_merge_across_a_collapsed_gap_keeps_spanning_it() {
+        // The merge's last column survives the collapse, so it still covers
+        // the gap column next to it.
+        let body = format!(
+            "{}<mergeCells><mergeCell ref=\"A1:XFD1\"/></mergeCells>",
+            sparse_sheet(&[(0, 0, "title"), (1_048_575, 0, "end")])
+        );
+        let doc = parse(&one_sheet(&body).build()).unwrap();
+        let table = first_table(&doc);
+        let CellSlot::Origin(cell) = &table.grid[0][0] else { panic!("merge origin") };
+        assert_eq!(cell.col_span, 3);
+        assert_eq!(texts(table).last().unwrap()[0], "end");
+    }
+
+    #[test]
+    fn the_grid_budget_still_holds_for_a_sheet_that_is_truly_big() {
+        // Every third row and column holds a cell: collapsing the gaps leaves
+        // 2200 x 2200 positions, still past the budget.
+        let diagonal: Vec<(u32, u32, &str)> = (0..1100).map(|i| (3 * i, 3 * i, "x")).collect();
+        let body = sparse_sheet(&diagonal);
+        let err = parse(&one_sheet(&body).build()).unwrap_err();
         assert!(
             matches!(err, ConvertError::ResourceLimit { limit: "max_grid_slots", .. }),
             "got {err:?}"
         );
 
-        // Sheets accumulate, so a pile of them cannot each sit under the cap.
-        let half = r#"<sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>a</t></is></c></row><row r="150000"><c r="P150000" t="inlineStr"><is><t>b</t></is></c></row></sheetData>"#;
-        let wb = Wb { sheets: vec![("A", "", half), ("B", "", half)], ..Wb::default() };
+        // Sheets accumulate, so a pile of them cannot each sit under the cap:
+        // each of these collapses to 1600 x 1600 positions.
+        let diagonal: Vec<(u32, u32, &str)> = (0..800).map(|i| (3 * i, 3 * i, "x")).collect();
+        let half = sparse_sheet(&diagonal);
+        let wb = Wb { sheets: vec![("A", "", &half), ("B", "", &half)], ..Wb::default() };
         let err = parse(&wb.build()).unwrap_err();
         assert!(
             matches!(err, ConvertError::ResourceLimit { limit: "max_grid_slots", .. }),
