@@ -62,13 +62,16 @@ fn a_picture_whose_part_is_missing_still_counts() {
     assert_eq!(docx_images_left_out(&package(&parts)), 70);
 }
 
-#[test]
-fn a_picture_in_a_code_styled_paragraph_still_counts() {
-    const W: &str = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
-    const R: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
-    const A: &str = "http://schemas.openxmlformats.org/drawingml/2006/main";
+const W: &str = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+const R: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+const A: &str = "http://schemas.openxmlformats.org/drawingml/2006/main";
+const MC: &str = "http://schemas.openxmlformats.org/markup-compatibility/2006";
+
+/// A Word package whose body is `body`, with a "Source Code" paragraph
+/// style and the picture parts `rId2` and `rId3`.
+fn docx(body: &str) -> Vec<u8> {
     let part = |name: &str, xml: String| (name.to_owned(), xml.into_bytes());
-    let parts = [
+    package(&[
         part(
             "[Content_Types].xml",
             r#"<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="png" ContentType="image/png"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>"#.into(),
@@ -79,7 +82,7 @@ fn a_picture_in_a_code_styled_paragraph_still_counts() {
         ),
         part(
             "word/_rels/document.xml.rels",
-            format!(r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="{R}/styles" Target="styles.xml"/><Relationship Id="rId2" Type="{R}/image" Target="media/a.png"/></Relationships>"#),
+            format!(r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="{R}/styles" Target="styles.xml"/><Relationship Id="rId2" Type="{R}/image" Target="media/a.png"/><Relationship Id="rId3" Type="{R}/image" Target="media/b.png"/></Relationships>"#),
         ),
         part(
             "word/styles.xml",
@@ -87,13 +90,58 @@ fn a_picture_in_a_code_styled_paragraph_still_counts() {
         ),
         part(
             "word/document.xml",
-            format!(r#"<w:document xmlns:w="{W}" xmlns:r="{R}"><w:body><w:p><w:pPr><w:pStyle w:val="SourceCode"/></w:pPr><w:r><w:t>let x = 1;</w:t></w:r><w:r><w:drawing><a:blip xmlns:a="{A}" r:embed="rId2"/></w:drawing></w:r></w:p></w:body></w:document>"#),
+            format!(r#"<w:document xmlns:w="{W}" xmlns:r="{R}" xmlns:a="{A}" xmlns:mc="{MC}"><w:body>{body}</w:body></w:document>"#),
         ),
         ("word/media/a.png".to_owned(), b"\x89PNG\r\n\x1a\n".to_vec()),
-    ];
-    let bytes = package(&parts);
+        ("word/media/b.png".to_owned(), b"\x89PNG\r\n\x1a\n".to_vec()),
+    ])
+}
+
+/// A paragraph holding one drawing with `inner` inside it.
+fn drawing(inner: &str) -> String {
+    format!("<w:p><w:r><w:t>Text.</w:t></w:r><w:r><w:drawing>{inner}</w:drawing></w:r></w:p>")
+}
+
+const BLIP_A: &str = r#"<a:blip r:embed="rId2"/>"#;
+const BLIP_B: &str = r#"<a:blip r:embed="rId3"/>"#;
+
+#[test]
+fn every_picture_in_a_drawing_counts_once() {
+    // A group of two pictures.
+    assert_eq!(
+        docx_images_left_out(&docx(&drawing(&format!("<a:grpSp>{BLIP_A}{BLIP_B}</a:grpSp>")))),
+        2
+    );
+    // A picture grouped with a caption text box: the box's text imports,
+    // the picture does not.
+    let caption = format!(
+        "<w:txbxContent><w:p><w:r><w:t>Figure 1.</w:t></w:r></w:p></w:txbxContent>{BLIP_A}"
+    );
+    let bytes = docx(&drawing(&caption));
+    let converted =
+        anydoc::to_markdown_bytes_with(&bytes, anydoc::Format::Docx, Options::default()).unwrap();
+    assert!(converted.markdown.contains("Figure 1."), "{}", converted.markdown);
+    assert_eq!(converted.images_left_out, 1);
+    // A picture inside a text box counts once, with the box's own blocks.
+    let boxed = format!("<w:txbxContent>{}</w:txbxContent>", drawing(BLIP_A));
+    assert_eq!(docx_images_left_out(&docx(&drawing(&boxed))), 1);
+    // A picture with no relationship and no alt text.
+    assert_eq!(docx_images_left_out(&docx(&drawing("<a:blip/>"))), 1);
+    // Of AlternateContent, only the branch processed.
+    let alternate = format!(
+        "<mc:AlternateContent><mc:Choice Requires=\"urn:unknown\">{BLIP_A}</mc:Choice><mc:Fallback>{BLIP_B}</mc:Fallback></mc:AlternateContent>"
+    );
+    assert_eq!(docx_images_left_out(&docx(&drawing(&alternate))), 1);
+    assert_eq!(docx_images_left_out(&docx("<w:p><w:r><w:t>None.</w:t></w:r></w:p>")), 0);
+}
+
+#[test]
+fn a_picture_in_a_code_styled_paragraph_still_counts() {
+    let bytes = docx(&format!(
+        r#"<w:p><w:pPr><w:pStyle w:val="SourceCode"/></w:pPr><w:r><w:t>let x = 1;</w:t></w:r><w:r><w:drawing>{BLIP_A}</w:drawing></w:r></w:p>"#
+    ));
     let converted =
         anydoc::to_markdown_bytes_with(&bytes, anydoc::Format::Docx, Options::default()).unwrap();
     assert!(converted.markdown.contains("```"), "{}", converted.markdown);
-    assert_eq!(docx_images_left_out(&bytes), 1);
+    assert_eq!(converted.images_left_out, 1);
 }

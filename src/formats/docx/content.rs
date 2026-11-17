@@ -556,6 +556,11 @@ impl<'a, 'b, 'e> InlineWalker<'a, 'b, 'e> {
     /// attachments at this position; images/charts/diagrams/objects resolve
     /// through relationships.
     fn walk_drawing(&mut self, elem: &Element) -> Result<(), ConvertError> {
+        // Pictures are counted before anything below renders, flattens or
+        // drops them (`Document::source_images`).
+        let pictures = self.pictures_in(elem);
+        self.pictures_met(pictures);
+
         // Text boxes first: their content is the drawing's content.
         let mut boxes = Vec::new();
         collect_text_boxes(elem, &mut boxes);
@@ -592,7 +597,6 @@ impl<'a, 'b, 'e> InlineWalker<'a, 'b, 'e> {
         // carries a VML preview image next to the o:OLEObject, and the
         // object's identity and payload must win over its preview.
         if let Some(ole) = elem.first_descendant(ns::O_VML, "OLEObject") {
-            self.picture_met();
             let prog_id = ole.attr(ns::O_VML, "ProgID").unwrap_or("object").to_string();
             let alt = if descr.trim().is_empty() {
                 format!("Embedded object: {prog_id}")
@@ -634,9 +638,6 @@ impl<'a, 'b, 'e> InlineWalker<'a, 'b, 'e> {
                 self.ctx.assets,
                 rel_id,
             )?;
-            if !matches!(source, Some(ImageSource::External(_))) {
-                self.picture_met();
-            }
             match source {
                 Some(source) => self.push(Inline::Image { alt: descr, source }),
                 None => {
@@ -649,17 +650,74 @@ impl<'a, 'b, 'e> InlineWalker<'a, 'b, 'e> {
         }
 
         if !descr.trim().is_empty() {
-            self.picture_met();
+            // A described drawing with no picture element (a shape): its
+            // alt text stands for it.
+            if pictures == 0 {
+                self.pictures_met(1);
+            }
             self.push(Inline::Image { alt: descr, source: ImageSource::Unavailable });
         }
         Ok(())
     }
 
-    /// A picture whose content is not text: counted here, before a
-    /// preformatted paragraph flattens it to text or a missing part leaves
-    /// nothing to place.
-    fn picture_met(&self) {
-        self.ctx.images.set(self.ctx.images.get().saturating_add(1));
+    fn pictures_met(&self, pictures: u32) {
+        self.ctx.images.set(self.ctx.images.get().saturating_add(pictures));
+    }
+
+    /// The pictures in a drawing, VML pict or embedded object whose content
+    /// is not text: each DrawingML `a:blip` and VML `v:imagedata`, embedded
+    /// or with its part missing, and each `o:OLEObject`, whose VML preview
+    /// is the same object and does not count again. A linked picture
+    /// renders as `![alt](url)` and is not counted. Text-box content is
+    /// walked as blocks of its own, and of an `mc:AlternateContent` only
+    /// the branch processed counts.
+    fn pictures_in(&self, elem: &Element) -> u32 {
+        #[derive(Default)]
+        struct Found {
+            objects: u32,
+            blips: u32,
+            image_data: u32,
+        }
+        fn collect(walker: &InlineWalker<'_, '_, '_>, elem: &Element, found: &mut Found) {
+            for child in elem.child_elems() {
+                if child.is(ns::W, "txbxContent") {
+                    continue;
+                }
+                if child.is(ns::MC, "AlternateContent") {
+                    if let Some(branch) = walker.ctx.alternate_branch(child) {
+                        collect(walker, branch, found);
+                    }
+                    continue;
+                }
+                if child.is(ns::O_VML, "OLEObject") {
+                    found.objects += 1;
+                } else if child.is(ns::A, "blip") {
+                    if !walker.linked(
+                        child.attr_qualified(ns::R, "embed"),
+                        child.attr_qualified(ns::R, "link"),
+                    ) {
+                        found.blips += 1;
+                    }
+                } else if child.is(ns::VML, "imagedata")
+                    && !walker.linked(None, child.attr_qualified(ns::R, "id"))
+                {
+                    found.image_data += 1;
+                }
+                collect(walker, child, found);
+            }
+        }
+        let mut found = Found::default();
+        collect(self, elem, &mut found);
+        if found.objects > 0 { found.objects + found.blips } else { found.blips + found.image_data }
+    }
+
+    /// Whether a picture with these relationship ids renders as a linked
+    /// image: no embedded part, and an external target to point at.
+    fn linked(&self, embed: Option<&str>, link: Option<&str>) -> bool {
+        embed.is_none()
+            && link
+                .and_then(|id| self.ctx.rels.get(id))
+                .is_some_and(|rel| rel.mode == TargetMode::External && !rel.target.is_empty())
     }
 
     /// Textual extraction of a chart part via `shared::drawingml`.
