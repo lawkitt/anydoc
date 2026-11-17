@@ -149,6 +149,13 @@ pub struct Conversion {
     pub pages_needing_ocr: Vec<u32>,
     /// Pages in the document, or 0 for the formats that do not paginate.
     pub page_count: u32,
+    /// Images, in the body and notes, whose content the Markdown does not
+    /// carry: embedded pictures and objects, and images whose bytes are
+    /// missing, which render as their alt text at most. Linked images,
+    /// which render as `![alt](url)`, and charts and diagrams, which render
+    /// as text, are not counted. Always 0 for PDFs, which convert without
+    /// the document model.
+    pub images_left_out: u32,
 }
 
 /// Convert a document file to Markdown. The format is detected from the
@@ -197,8 +204,44 @@ pub fn to_markdown_bytes_with(
     if format == Format::Pdf {
         return formats::pdf::to_markdown(bytes, options.ocr);
     }
-    let markdown = document_to_markdown(&to_document(bytes, format)?);
-    Ok(Conversion { markdown, pages_needing_ocr: Vec::new(), page_count: 0 })
+    let document = to_document(bytes, format)?;
+    let markdown = document_to_markdown(&document);
+    let images_left_out = images_left_out(&document);
+    Ok(Conversion { markdown, pages_needing_ocr: Vec::new(), page_count: 0, images_left_out })
+}
+
+/// [`Conversion::images_left_out`] for a parsed document.
+fn images_left_out(document: &model::Document) -> u32 {
+    use model::{Block, CellSlot, ImageSource, Inline};
+    fn walk(inlines: &[Inline], count: &mut u32) {
+        for inline in inlines {
+            match inline {
+                Inline::Image { source: ImageSource::External(_), .. } => {}
+                Inline::Image { .. } => *count = count.saturating_add(1),
+                Inline::Link { content, .. } => walk(content, count),
+                _ => {}
+            }
+        }
+    }
+    let mut count = 0;
+    let mut stack: Vec<&Block> = document.blocks.iter().collect();
+    stack.extend(document.notes.iter().flat_map(|note| &note.blocks));
+    while let Some(block) = stack.pop() {
+        match block {
+            Block::Paragraph(content) | Block::Heading { content, .. } => walk(content, &mut count),
+            Block::List(list) => stack.extend(list.items.iter().flat_map(|item| &item.blocks)),
+            Block::Table(table) => {
+                for slot in table.grid.iter().flatten() {
+                    if let CellSlot::Origin(cell) = slot {
+                        stack.extend(&cell.blocks);
+                    }
+                }
+            }
+            Block::BlockQuote(blocks) => stack.extend(blocks),
+            Block::CodeBlock { .. } | Block::Rule | Block::Math(_) => {}
+        }
+    }
+    count
 }
 
 /// Parse an in-memory document into the document model. Pass a [`Format`] to
@@ -217,4 +260,57 @@ fn resolve_format(bytes: &[u8], format: Option<Format>) -> Result<Format, Conver
     format.or_else(|| Format::from_bytes(bytes)).ok_or_else(|| {
         ConvertError::Unsupported("unrecognized file content: name the format explicitly".into())
     })
+}
+
+#[cfg(test)]
+mod images_left_out_tests {
+    use super::images_left_out;
+    use crate::model::{
+        AssetId, Block, Cell, Document, ImageSource, Inline, LinkTarget, List, ListItem,
+        MarkerKind, Note, NoteKind, Table, TableKind,
+    };
+
+    fn image(source: ImageSource) -> Inline {
+        Inline::Image { alt: "alt".into(), source }
+    }
+
+    #[test]
+    fn counts_images_without_content_wherever_they_sit() {
+        let embedded = || image(ImageSource::Asset(AssetId(0)));
+        let document = Document {
+            blocks: vec![
+                Block::Paragraph(vec![
+                    embedded(),
+                    image(ImageSource::Unavailable),
+                    // A linked image renders as `![alt](url)`.
+                    image(ImageSource::External("https://example.com/a.png".into())),
+                    Inline::Link {
+                        content: vec![embedded()],
+                        target: LinkTarget::External("https://example.com".into()),
+                    },
+                ]),
+                Block::List(List {
+                    marker: MarkerKind::Bullet,
+                    start: 1,
+                    items: vec![ListItem {
+                        blocks: vec![Block::BlockQuote(vec![Block::Paragraph(vec![embedded()])])],
+                        marker_label: None,
+                    }],
+                }),
+                Block::Table(Table::from_rows(
+                    vec![vec![Cell::from_inlines(vec![embedded()])]],
+                    0,
+                    TableKind::Data,
+                )),
+            ],
+            notes: vec![Note {
+                id: "1".into(),
+                kind: NoteKind::Footnote,
+                blocks: vec![Block::Heading { level: 1, anchor: None, content: vec![embedded()] }],
+            }],
+            assets: Vec::new(),
+        };
+        assert_eq!(images_left_out(&document), 6);
+        assert_eq!(images_left_out(&Document::default()), 0);
+    }
 }
