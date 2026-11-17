@@ -295,11 +295,13 @@ struct MathState {
     /// Open groups, innermost last, each with the depth it opened at. The
     /// first is the zone itself.
     open: Vec<(usize, Element)>,
+    /// Whether any run in the zone was visible: neither deleted nor hidden.
+    has_visible_text: bool,
 }
 
 impl MathState {
     fn new(depth: usize) -> Self {
-        MathState { depth, open: vec![(depth, math_elem("zone"))] }
+        MathState { depth, open: vec![(depth, math_elem("zone"))], has_visible_text: false }
     }
 
     /// Open a nested group. Past [`limits::MAX_XML_DEPTH`] the group is
@@ -1093,9 +1095,10 @@ impl<'a> Parser<'a> {
         let Some(math) = self.dest.math.take() else {
             return;
         };
-        // Runs after the group closes: the state is the enclosing one. A
-        // hidden zone's runs were already left out and counted.
-        if self.state.deleted || self.state.hidden {
+        // Runs after the group closes: the state is the enclosing one. Its
+        // runs were filtered one by one (a `\v0` run in a hidden zone shows),
+        // so a zone with no visible run is left out whole.
+        if self.state.deleted || !math.has_visible_text {
             return;
         }
         let (lines, display) = math.finish();
@@ -1199,11 +1202,14 @@ impl<'a> Parser<'a> {
             Capture::Bookmark => self.dest.bookmark.push_str(&text),
             // Picture payload bytes are collected raw in the token loop.
             Capture::Pict => {}
-            // A hidden math run (`\v`) is left out and counted like text.
+            // Math runs follow their own state: a deleted run is dropped, and a
+            // hidden one (`\v`) is left out and counted like text.
+            Capture::Math if self.state.deleted => {}
             Capture::Math if self.state.hidden => self.hidden.left_out(&text),
             Capture::Math => {
                 if let Some(math) = &mut self.dest.math {
                     self.hidden.visible();
+                    math.has_visible_text = true;
                     math.push_text(text);
                 }
             }

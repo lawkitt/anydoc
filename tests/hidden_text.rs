@@ -20,7 +20,11 @@ fn fixtures_leave_hidden_text_out_and_count_it() {
     // See `hidden_docx` and `hidden_rtf` in tests/gen_fixtures.py: every
     // hidden word is spelled SECRET-*, and the comments there add up the
     // stretches.
-    for (path, stretches) in [("docx/handmade-hidden.docx", 7), ("rtf/handmade-hidden.rtf", 6)] {
+    for (path, stretches) in [
+        ("docx/handmade-hidden.docx", 7),
+        ("rtf/handmade-hidden.rtf", 6),
+        ("doc/handmade-hidden.doc", 3),
+    ] {
         let converted = fixture(path);
         assert!(!converted.markdown.contains("SECRET"), "{path}: {}", converted.markdown);
         assert!(converted.markdown.contains("Shown in a hidden paragraph."), "{path}");
@@ -51,6 +55,11 @@ const W: &str = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 
 /// A Word package with `body`, `styles` and `footnotes` (when not empty).
 fn docx(body: &str, styles: &str, footnotes: &str) -> Vec<u8> {
+    docx_numbered(body, styles, footnotes, "")
+}
+
+/// [`docx`] with a numbering part.
+fn docx_numbered(body: &str, styles: &str, footnotes: &str, numbering: &str) -> Vec<u8> {
     let mut parts = vec![
         (
             "[Content_Types].xml",
@@ -62,7 +71,7 @@ fn docx(body: &str, styles: &str, footnotes: &str) -> Vec<u8> {
         ),
         (
             "word/_rels/document.xml.rels",
-            r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes" Target="footnotes.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://example.com/" TargetMode="External"/></Relationships>"#.to_owned(),
+            r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes" Target="footnotes.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://example.com/" TargetMode="External"/><Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/></Relationships>"#.to_owned(),
         ),
         (
             "word/document.xml",
@@ -76,6 +85,12 @@ fn docx(body: &str, styles: &str, footnotes: &str) -> Vec<u8> {
         parts.push((
             "word/footnotes.xml",
             format!(r#"<w:footnotes xmlns:w="{W}">{footnotes}</w:footnotes>"#),
+        ));
+    }
+    if !numbering.is_empty() {
+        parts.push((
+            "word/numbering.xml",
+            format!(r#"<w:numbering xmlns:w="{W}">{numbering}</w:numbering>"#),
         ));
     }
     package(&parts)
@@ -343,4 +358,59 @@ fn doc_a_hidden_field_instruction_keeps_its_visible_link() {
     let converted = convert(&doc(&runs), Format::Doc);
     assert_eq!(converted.markdown.trim(), "[Example](https://example.com/)");
     assert_eq!(converted.hidden_text_left_out, 0);
+}
+
+/// An equation can sit directly in the body, outside any paragraph.
+#[test]
+fn docx_hidden_runs_in_body_level_equations_are_left_out() {
+    let math_run =
+        |text: &str, rpr: &str| format!(r#"<m:r><w:rPr>{rpr}</w:rPr><m:t>{text}</m:t></m:r>"#);
+    let body = format!(
+        "{}<m:oMath>{}{}</m:oMath><m:oMathPara><m:oMath>{}</m:oMath></m:oMathPara>",
+        format_args!("<w:p>{}</w:p>", run("Text.", "")),
+        math_run("x", ""),
+        math_run("SECRET", "<w:vanish/>"),
+        math_run("SECRET", "<w:vanish/>"),
+    );
+    let converted = convert(&docx(&body, "", ""), Format::Docx);
+    assert!(!converted.markdown.contains("SECRET"), "{}", converted.markdown);
+    assert!(converted.markdown.contains('x'), "{}", converted.markdown);
+    assert_eq!(converted.hidden_text_left_out, 2);
+}
+
+/// A list item whose text is all hidden disappears with its marker.
+#[test]
+fn docx_a_wholly_hidden_list_item_leaves_no_marker() {
+    let numbering = concat!(
+        r#"<w:abstractNum w:abstractNumId="0"><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/></w:lvl></w:abstractNum>"#,
+        r#"<w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num>"#,
+    );
+    let item = |text: &str, rpr: &str| {
+        format!(
+            r#"<w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr></w:pPr>{}</w:p>"#,
+            run(text, rpr)
+        )
+    };
+    let body = [item("One", ""), item("SECRET", "<w:vanish/>"), item("Three", "")].concat();
+    let converted = convert(&docx_numbered(&body, "", "", numbering), Format::Docx);
+    assert!(!converted.markdown.contains("SECRET"), "{}", converted.markdown);
+    let items: Vec<&str> =
+        converted.markdown.lines().filter(|line| !line.trim().is_empty()).collect();
+    assert_eq!(items.len(), 2, "{}", converted.markdown);
+    assert!(items[0].ends_with("One") && items[1].ends_with("Three"), "{items:?}");
+    assert_eq!(converted.hidden_text_left_out, 1);
+}
+
+#[test]
+fn rtf_math_runs_follow_their_own_deleted_and_hidden_state() {
+    for (src, expected, stretches) in [
+        // A deleted run inside an equation is dropped, not counted.
+        (r"{\rtf1 {\mmath{\*\moMath{\mr x}{\mr\deleted SECRET}}}\par}", "$x$", 0),
+        // A run shown again with \v0 in a hidden zone stays.
+        (r"{\rtf1 {\v{\mmath{\*\moMath{\mr SECRET}{\mr\v0 x}}}}\par}", "$x$", 1),
+    ] {
+        let converted = convert(src.as_bytes(), Format::Rtf);
+        assert_eq!(converted.markdown.trim(), expected, "{src}");
+        assert_eq!(converted.hidden_text_left_out, stretches, "{src}");
+    }
 }

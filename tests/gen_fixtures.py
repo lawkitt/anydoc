@@ -2378,6 +2378,100 @@ def hidden_rtf():
     (OUT / "rtf" / "handmade-hidden.rtf").write_bytes(b"\n".join(parts))
 
 
+def hidden_doc():
+    """Binary .doc with hidden text through styles: a paragraph style whose
+    CHPX sets sprmCFVanish hides its paragraphs, also under a bold character
+    style that says nothing about hiding; direct sprmCFVanish hides a run
+    and sprmCFVanish 0 shows one again. Every hidden word is SECRET-*."""
+    HIDDEN_ISTD, STRONG_ISTD = 15, 16
+    VANISH, NOT_VANISH = b"\x3c\x08\x01", b"\x3c\x08\x00"
+
+    def std(name, istd, character, chpx):
+        stdf = bytearray(10)
+        struct.pack_into("<H", stdf, 0, 0x0FFE)                       # sti: not built-in
+        sgc = 2 if character else 1
+        struct.pack_into("<H", stdf, 2, (0x0FFF << 4) | sgc)          # istdBase nil
+        struct.pack_into("<H", stdf, 4, 1 if character else 2)        # cupx
+        chars = name.encode("utf-16-le")
+        record = bytes(stdf) + struct.pack("<H", len(name)) + chars + b"\x00\x00"
+        if not character:
+            record += struct.pack("<H", 2) + struct.pack("<H", istd)  # papx UPX
+        record += struct.pack("<H", len(chpx)) + chpx                 # chpx UPX
+        if len(record) % 2:
+            record += b"\x00"
+        return struct.pack("<H", len(record)) + record
+
+    cstd = STRONG_ISTD + 1
+    stshi = bytearray(18)
+    struct.pack_into("<H", stshi, 0, cstd)
+    struct.pack_into("<H", stshi, 2, 10)
+    stsh = struct.pack("<H", len(stshi)) + bytes(stshi)
+    for istd in range(cstd):
+        if istd == HIDDEN_ISTD:
+            stsh += std("Hidden Para", istd, False, VANISH)
+        elif istd == STRONG_ISTD:
+            stsh += std("Strong Char", istd, True, b"\x35\x08\x01")
+        else:
+            stsh += struct.pack("<H", 0)
+
+    # (paragraph text runs as (text, chpx grpprl), paragraph istd)
+    paras = [
+        ([("Visible start ", b""), ("SECRET-ONE ", VANISH), ("visible end.\r", b"")], 0),
+        ([("SECRET-TWO ", b""), ("SECRET-THREE", struct.pack("<HH", 0x4A30, STRONG_ISTD)),
+          ("\r", b"")], HIDDEN_ISTD),
+        ([("SECRET-FOUR ", b""), ("Shown in a hidden paragraph.", NOT_VANISH), ("\r", b"")],
+         HIDDEN_ISTD),
+        ([("After.\r", b"")], 0),
+    ]
+    text = "".join(t for runs, _ in paras for t, _ in runs).encode("cp1252")
+    fc0 = 0x400
+
+    def fkp_page(entries, entry_size, blob):
+        """entries: (fc_start, fc_end, grpprl bytes or b''); blob(grpprl) ->
+        (bytes, BX first byte) laid out from the end of the BX array."""
+        fkp = bytearray(512)
+        count = len(entries)
+        for i, (start, _, _) in enumerate(entries):
+            struct.pack_into("<I", fkp, i * 4, start)
+        struct.pack_into("<I", fkp, count * 4, entries[-1][1])
+        off = (count + 1) * 4 + count * entry_size
+        off += off % 2
+        for k, (_, _, grpprl) in enumerate(entries):
+            if not grpprl:
+                continue
+            data = blob(grpprl)
+            fkp[off:off + len(data)] = data
+            fkp[(count + 1) * 4 + k * entry_size] = off // 2
+            off += len(data) + (len(data) % 2)
+        fkp[511] = count
+        return fkp
+
+    chpx_entries, papx_entries = [], []
+    fc = fc0
+    for runs, istd in paras:
+        start = fc
+        for t, grpprl in runs:
+            chpx_entries.append((fc, fc + len(t), grpprl))
+            fc += len(t)
+        papx_entries.append((start, fc, struct.pack("<H", istd)))
+    chpx = fkp_page(chpx_entries, 1, lambda g: bytes([len(g)]) + g)
+    papx = fkp_page(papx_entries, 13, lambda g: bytes([0, (len(g) + 1) // 2]) + g)
+
+    PN_CHPX, PN_PAPX = 3, 4
+    word_doc = bytearray(word_doc_stream(0x0409, text))
+    word_doc += b"\x00" * (PN_CHPX * 512 - len(word_doc))
+    word_doc += chpx + papx
+    plcf_chpx = struct.pack("<II", fc0, fc) + struct.pack("<I", PN_CHPX)
+    plcf_papx = struct.pack("<II", fc0, fc) + struct.pack("<I", PN_PAPX)
+    table = stsh + plcf_chpx + plcf_papx
+    struct.pack_into("<II", word_doc, 0xA2, 0, len(stsh))
+    struct.pack_into("<II", word_doc, 0xFA, len(stsh), len(plcf_chpx))
+    struct.pack_into("<II", word_doc, 0x102, len(stsh) + len(plcf_chpx), len(plcf_papx))
+
+    write_cfb(OUT / "doc" / "handmade-hidden.doc",
+              [("0Table", table), ("WordDocument", bytes(word_doc))])
+
+
 def main():
     skip_office = "--skip-office" in sys.argv
     for sub in ["odt", "docx", "doc", "rtf", "ods", "xlsx", "xls", "csv",
@@ -2438,6 +2532,7 @@ def main():
     math_rtf()
     hidden_docx()
     hidden_rtf()
+    hidden_doc()
     csvs()
     malformed()
     abuse()

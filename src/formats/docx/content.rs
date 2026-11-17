@@ -158,7 +158,17 @@ fn collect_blocks(
         }
         if child.is(ns::M, "oMathPara") || child.is(ns::M, "oMath") {
             runs.flush(blocks);
-            blocks.extend(omath_para_to_tex(child).into_iter().map(Block::Math));
+            // An equation outside any paragraph: its runs resolve hidden text
+            // against the document defaults and the default paragraph style.
+            ctx.hidden.borrow_mut().visible();
+            let parity = match ctx.styles.default_paragraph {
+                Some(id) => ctx.styles.run_toggles(id)?,
+                None => Default::default(),
+            };
+            let base_hidden = ctx.styles.doc_defaults_hidden ^ parity.vanish;
+            let mut walker = InlineWalker::new(ctx, ctx.styles.doc_defaults, base_hidden);
+            let math = walker.visible_math(child)?;
+            blocks.extend(omath_para_to_tex(&math).into_iter().map(Block::Math));
             continue;
         }
         if child.ns.as_deref().is_none_or(|n| n != ns::W) {
@@ -166,7 +176,12 @@ fn collect_blocks(
         }
         match child.local.as_str() {
             "p" => {
-                let (kind, pieces) = parse_paragraph(child, ctx)?;
+                let (kind, pieces, hidden_only) = parse_paragraph(child, ctx)?;
+                // A list item whose content is all hidden text disappears
+                // with its marker, as other empty paragraphs do.
+                if hidden_only && matches!(kind, ParaKind::ListItem { .. }) {
+                    continue;
+                }
                 emit_paragraph(kind, pieces, blocks, runs);
             }
             "tbl" => {
@@ -237,7 +252,8 @@ fn emit_paragraph(kind: ParaKind, pieces: Vec<Piece>, blocks: &mut Vec<Block>, r
     }
 }
 
-fn parse_paragraph(p: &Element, ctx: &Ctx) -> Result<(ParaKind, Vec<Piece>), ConvertError> {
+/// A paragraph's kind and content, and whether hidden text was all it held.
+fn parse_paragraph(p: &Element, ctx: &Ctx) -> Result<(ParaKind, Vec<Piece>, bool), ConvertError> {
     let ppr = p.find(ns::W, "pPr");
     // A paragraph that names no style takes the default paragraph style.
     let pstyle_id = ppr
@@ -299,7 +315,13 @@ fn parse_paragraph(p: &Element, ctx: &Ctx) -> Result<(ParaKind, Vec<Piece>), Con
     ctx.hidden.borrow_mut().visible();
     let mut walker = InlineWalker::new(ctx, paragraph_level, paragraph_hidden);
     walker.walk(p)?;
-    Ok((kind, walker.finish()))
+    let left_out = walker.left_out;
+    let pieces = walker.finish();
+    let hidden_only = left_out
+        && pieces
+            .iter()
+            .all(|piece| matches!(piece, Piece::Inlines(inlines) if inlines_are_empty(inlines)));
+    Ok((kind, pieces, hidden_only))
 }
 
 /// Resolve a paragraph's effective numbering per ECMA-376: the direct

@@ -889,7 +889,11 @@ impl Assembler {
         let chpx = self.chpx.lookup(fc).map(|p| p.chpx.as_slice()).unwrap_or(&[]);
         let istd = chpx_istd(chpx).unwrap_or(para_istd);
         let style = self.stylesheet.get(istd);
-        let (base, hidden) = (style.chp, style.hidden);
+        // A character style applies over the paragraph style. Its chain is
+        // resolved on its own, so it cannot tell "not hidden" from "says
+        // nothing": the paragraph style's hiding stays under it.
+        let hidden = style.hidden || self.stylesheet.get(para_istd).hidden;
+        let base = style.chp;
         let mut props = apply_chpx(chpx, Chp { style: base, deleted: false, hidden }, base, hidden);
         if let Some(&piece_idx) = self.text.piece_of.get(char_index)
             && let Some(piece_prc) = self.piece_prm(piece_idx as usize)
