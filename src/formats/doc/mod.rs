@@ -7,6 +7,7 @@
 mod lists;
 mod sprm;
 mod stsh;
+mod symbols;
 
 use crate::error::ConvertError;
 use crate::model::{
@@ -108,6 +109,7 @@ pub fn parse(bytes: &[u8]) -> Result<Document, ConvertError> {
         papx: Runs::new(papx_runs),
         stylesheet,
         lists: list_tables,
+        fonts: symbols::Fonts::parse(&word_doc, &table),
         prcs,
         piece_prcs,
         note_refs,
@@ -606,6 +608,7 @@ fn composite_label(
 // Assembly: text stream + formatting runs -> model
 
 struct Assembler {
+    fonts: symbols::Fonts,
     text: TextStream,
     chpx: Runs,
     papx: Runs,
@@ -828,6 +831,7 @@ impl Assembler {
                 '\u{2}' | '\u{5}' | '\u{8}' | '\u{1f}' => {}
                 c if c.is_control() => {}
                 c => {
+                    let c = if c == '(' { self.symbol_at(fc, i).unwrap_or(c) } else { c };
                     para.push_char(c, chp.style);
                 }
             }
@@ -860,6 +864,20 @@ impl Assembler {
             props = apply_chpx(piece_prc, props, base);
         }
         props
+    }
+
+    /// U+0028 is a DOC symbol placeholder when sprmCSymbol supplies its glyph.
+    fn symbol_at(&self, fc: u32, char_index: usize) -> Option<char> {
+        let mut symbol = None;
+        if let Some(props) = self.chpx.lookup(fc) {
+            symbols::apply(&props.chpx, &mut symbol);
+        }
+        if let Some(&piece_idx) = self.text.piece_of.get(char_index)
+            && let Some(prc) = self.piece_prm(piece_idx as usize)
+        {
+            symbols::apply(prc, &mut symbol);
+        }
+        self.fonts.checkbox(symbol?)
     }
 
     fn piece_prm(&self, piece_idx: usize) -> Option<&[u8]> {
