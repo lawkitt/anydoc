@@ -2381,9 +2381,10 @@ def hidden_rtf():
 def hidden_doc():
     """Binary .doc with hidden text through styles: a paragraph style whose
     CHPX sets sprmCFVanish hides its paragraphs, also under a bold character
-    style that says nothing about hiding; direct sprmCFVanish hides a run
-    and sprmCFVanish 0 shows one again. Every hidden word is SECRET-*."""
-    HIDDEN_ISTD, STRONG_ISTD = 15, 16
+    style that says nothing about hiding, but not under a character style
+    that turns sprmCFVanish off; direct sprmCFVanish hides a run and
+    sprmCFVanish 0 shows one again. Every hidden word is SECRET-*."""
+    HIDDEN_ISTD, STRONG_ISTD, SHOWN_ISTD = 15, 16, 17
     VANISH, NOT_VANISH = b"\x3c\x08\x01", b"\x3c\x08\x00"
 
     def std(name, istd, character, chpx):
@@ -2401,7 +2402,7 @@ def hidden_doc():
             record += b"\x00"
         return struct.pack("<H", len(record)) + record
 
-    cstd = STRONG_ISTD + 1
+    cstd = SHOWN_ISTD + 1
     stshi = bytearray(18)
     struct.pack_into("<H", stshi, 0, cstd)
     struct.pack_into("<H", stshi, 2, 10)
@@ -2411,6 +2412,8 @@ def hidden_doc():
             stsh += std("Hidden Para", istd, False, VANISH)
         elif istd == STRONG_ISTD:
             stsh += std("Strong Char", istd, True, b"\x35\x08\x01")
+        elif istd == SHOWN_ISTD:
+            stsh += std("Shown Char", istd, True, NOT_VANISH)
         else:
             stsh += struct.pack("<H", 0)
 
@@ -2418,6 +2421,7 @@ def hidden_doc():
     paras = [
         ([("Visible start ", b""), ("SECRET-ONE ", VANISH), ("visible end.\r", b"")], 0),
         ([("SECRET-TWO ", b""), ("SECRET-THREE", struct.pack("<HH", 0x4A30, STRONG_ISTD)),
+          (" Shown by a character style.", struct.pack("<HH", 0x4A30, SHOWN_ISTD)),
           ("\r", b"")], HIDDEN_ISTD),
         ([("SECRET-FOUR ", b""), ("Shown in a hidden paragraph.", NOT_VANISH), ("\r", b"")],
          HIDDEN_ISTD),

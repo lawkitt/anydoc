@@ -112,6 +112,27 @@ impl<'a> Styles<'a> {
         Ok(parity)
     }
 
+    /// Whether a table style hides the text of a cell: the parity of `true`
+    /// `w:vanish` specifications along its `basedOn` chain, in its own `w:rPr`
+    /// and in the conditional `w:tblStylePr` parts of `conditions` (such as
+    /// `wholeTable` or `firstRow`) that apply to the cell.
+    pub fn table_vanish(&self, id: &str, conditions: &[&str]) -> Result<bool, ConvertError> {
+        let mut parity = false;
+        self.chains.walk::<()>(id, |style| {
+            let parts =
+                std::iter::once(style).chain(style.find_all(ns::W, "tblStylePr").filter(|part| {
+                    part.attr(ns::W, "type").is_some_and(|kind| conditions.contains(&kind))
+                }));
+            for part in parts {
+                if part.find(ns::W, "rPr").and_then(|rpr| on_off(rpr, "vanish")) == Some(true) {
+                    parity = !parity;
+                }
+            }
+            None
+        })?;
+        Ok(parity)
+    }
+
     /// Heading level a paragraph style resolves to, from its name
     /// (`heading N`, `Title`) or an `outlineLvl`, inherited through
     /// `basedOn`. Tri-state: `Some(None)` when the nearest specification is
