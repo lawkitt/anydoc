@@ -473,7 +473,12 @@ pub(super) fn build_table(
         // within the budget keep every empty row and column.
         let mut used_rows: Vec<u32> = Vec::with_capacity(cells.len() + 2 * sheet.merges.len());
         let mut used_cols: Vec<u32> = Vec::with_capacity(cells.len() + 2 * sheet.merges.len());
+        // Only visible cells count: a cell in a hidden row would otherwise
+        // keep its visible column, and one in a hidden column its row.
         for &(r, c) in cells.keys() {
+            if hidden_row(r) || hidden_col(c) {
+                continue;
+            }
             used_rows.push(r);
             used_cols.push(c);
         }
@@ -1110,6 +1115,22 @@ mod tests {
         let CellSlot::Origin(cell) = &table.grid[0][0] else { panic!("merge origin") };
         assert_eq!(cell.col_span, 3);
         assert_eq!(texts(table).last().unwrap()[0], "end");
+    }
+
+    #[test]
+    fn hidden_cells_do_not_hold_collapsed_gaps_open() {
+        // Visible cells at opposite corners; a hidden row and a hidden column
+        // full of scattered cells. Counting the hidden cells would keep about
+        // 2200 rows and columns and fail the budget; the visible grid is 3 x 3.
+        let mut cells: Vec<(u32, u32, &str)> = vec![(0, 0, "a")];
+        cells.extend((1..1100).map(|i| (1, 3 * i, "hidden row")));
+        cells.extend((1..1100).map(|i| (3 * i + 1, 1, "hidden column")));
+        cells.sort_unstable_by_key(|&(r, c, _)| (r, c));
+        cells.push((1_048_575, 16_383, "b"));
+        let data = sparse_sheet(&cells).replace(r#"<row r="2">"#, r#"<row r="2" hidden="1">"#);
+        let body = format!(r#"<cols><col min="2" max="2" hidden="1"/></cols>{data}"#);
+        let doc = parse(&one_sheet(&body).build()).unwrap();
+        assert_eq!(texts(first_table(&doc)), [["a", "", ""], ["", "", ""], ["", "", "b"]]);
     }
 
     #[test]
