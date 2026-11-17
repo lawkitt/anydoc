@@ -12,7 +12,7 @@ expression: output
 Interruption paragraph.
 
 4. One-four continues the count
-1. Two-one independent counter
+5. Two-one independent counter
 10. Ten-start via override
 
 - A: Letter-A via numStyleLink
@@ -20,7 +20,7 @@ Interruption paragraph.
 
 Suppressed numbering paragraph
 
-5. Style-numbered paragraph
+8. Style-numbered paragraph
 1. pStyle-bound level one
    - a. pStyle-bound level two
 2. pStyle-bound level one again
