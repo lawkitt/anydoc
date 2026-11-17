@@ -3,6 +3,7 @@
 //! comes from the list tables - never guessed from label text. Page
 //! headers/footers are excluded (fixed policy).
 
+mod comments;
 mod lexer;
 mod table;
 mod tables;
@@ -12,12 +13,14 @@ use crate::model::{Block, Document, Inline, Note, NoteKind, Style, inlines_are_e
 use crate::package::limits;
 use crate::package::xml::{Element, Node, ns};
 use crate::shared::blockstyle::{BlockStyle, StyledRun};
+use crate::shared::comments::TextSink;
 use crate::shared::delta::rebase_emphasis;
 use crate::shared::fields::field_result;
 use crate::shared::hidden::HiddenText;
 use crate::shared::list::{ListEntry, ListKey, MarkerKind, flush_list};
 use crate::shared::math::{math_lines, omath_para_to_tex};
 use crate::shared::text::clean_text;
+use comments::{AtnDest, RtfComments};
 use lexer::{Lexer, Token};
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -87,6 +90,8 @@ struct CharState {
     hidden: bool,
     capture: Capture,
     note: Option<NoteKind>,
+    /// The comment destination this group's text belongs to.
+    atn: AtnDest,
 }
 
 impl Default for CharState {
@@ -108,6 +113,7 @@ impl Default for CharState {
             hidden: false,
             capture: Capture::None,
             note: None,
+            atn: AtnDest::None,
         }
     }
 }
@@ -647,6 +653,10 @@ struct Parser<'a> {
     dest: Destinations,
     assets: crate::shared::assets::AssetSink,
     hidden: HiddenText,
+    comments: RtfComments,
+    /// Decodes the text of comment destinations, which the body drops: a
+    /// decoder of its own leaves the body's decoding exactly as it was.
+    comment_decoder: TextDecoder,
 }
 
 impl<'a> Parser<'a> {
@@ -671,6 +681,8 @@ impl<'a> Parser<'a> {
             dest: Destinations::default(),
             assets: crate::shared::assets::AssetSink::new(),
             hidden: HiddenText::default(),
+            comments: RtfComments::default(),
+            comment_decoder: TextDecoder::new(default_encoding),
         }
     }
 
@@ -697,9 +709,13 @@ impl<'a> Parser<'a> {
                 }
                 Token::Close => {
                     self.flush_pending();
+                    let closing = self.state.atn;
                     match self.stack.pop() {
                         Some(prev) => self.state = prev,
                         None => self.recovered = true,
+                    }
+                    if closing != self.state.atn {
+                        self.comments.close(closing);
                     }
                     let depth = self.stack.len();
                     self.dest.close_fields(depth, &mut self.inlines);
@@ -730,6 +746,8 @@ impl<'a> Parser<'a> {
                         }
                     } else if self.accepts_text() {
                         self.decoder.byte(b);
+                    } else if self.comment_reads() {
+                        self.comment_decoder.byte(b);
                     }
                 }
                 Token::Bin(payload) => {
@@ -764,7 +782,14 @@ impl<'a> Parser<'a> {
             b'~' => self.push_char('\u{a0}'),
             b'-' => {}
             b'_' => self.push_char('-'),
-            b'*' => self.state.suppress = true,
+            b'*' => {
+                self.flush_comment_pending();
+                self.state.suppress = true;
+                // An ignorable destination inside a comment is not its text.
+                if self.state.atn != AtnDest::None {
+                    self.state.atn = AtnDest::Skip;
+                }
+            }
             b'\\' | b'{' | b'}' => self.push_char(b as char),
             _ => {}
         }
@@ -773,6 +798,15 @@ impl<'a> Parser<'a> {
     /// Dispatch a control word to its subsystem handler; unhandled words
     /// that name a suppressed destination silence their group.
     fn control_word(&mut self, word: &str, param: Option<i32>) -> Result<(), ConvertError> {
+        // Comment destinations are tracked beside the usual dispatch, which
+        // goes on to suppress them as before.
+        if let Some(dest) = AtnDest::for_word(word)
+            && (self.state.suppress || SUPPRESSED_DESTINATIONS.contains(&word))
+        {
+            self.flush_comment_pending();
+            self.state.atn = dest;
+            self.comments.open(dest);
+        }
         if self.math_control(word, param) {
             return Ok(());
         }
@@ -806,6 +840,11 @@ impl<'a> Parser<'a> {
                     self.flush_pending();
                     if let Some(c) = self.decoder.unicode(param, self.state.uc_skip) {
                         self.push_text(c.to_string());
+                    }
+                } else if self.comment_reads() {
+                    self.flush_comment_pending();
+                    if let Some(c) = self.comment_decoder.unicode(param, self.state.uc_skip) {
+                        self.comments.text(self.state.atn, &clean_text(&c.to_string()));
                     }
                 }
             }
@@ -849,6 +888,10 @@ impl<'a> Parser<'a> {
             }
             "par" | "sect" => {
                 self.flush_pending();
+                if self.state.atn == AtnDest::Text && self.comment_reads() {
+                    self.flush_comment_pending();
+                    self.comments.paragraph();
+                }
                 if self.state.note.is_some() {
                     self.inlines.push(Inline::LineBreak);
                 } else if self.state.deleted {
@@ -876,6 +919,10 @@ impl<'a> Parser<'a> {
             // boundary they carry is not.
             "line" | "lbr" | "page" | "column" => {
                 self.flush_pending();
+                if self.state.atn == AtnDest::Text && self.comment_reads() {
+                    self.flush_comment_pending();
+                    self.comments.text(AtnDest::Text, "\n");
+                }
                 if !self.state.suppress && !self.state.deleted && !self.state.hidden {
                     self.inlines.push(Inline::LineBreak);
                 }
@@ -1172,6 +1219,10 @@ impl<'a> Parser<'a> {
 
     fn push_char(&mut self, c: char) {
         if !self.accepts_text() {
+            if self.comment_reads() && !self.comment_decoder.skip_char() {
+                self.flush_comment_pending();
+                self.comments.text(self.state.atn, &clean_text(&c.to_string()));
+            }
             return;
         }
         if self.decoder.skip_char() {
@@ -1182,9 +1233,26 @@ impl<'a> Parser<'a> {
     }
 
     fn flush_pending(&mut self) {
+        self.flush_comment_pending();
         let encoding = self.state.font.and_then(|f| self.prelude.fonts.get(&f).copied());
         if let Some(text) = self.decoder.take_pending(encoding) {
             self.push_text(text);
+        }
+    }
+
+    /// Text the body drops that belongs to a comment: a suppressed group,
+    /// captured by nothing else, inside a comment destination.
+    fn comment_reads(&self) -> bool {
+        self.state.suppress
+            && self.state.capture == Capture::None
+            && !self.state.deleted
+            && self.state.atn.reads_text()
+    }
+
+    fn flush_comment_pending(&mut self) {
+        let encoding = self.state.font.and_then(|f| self.prelude.fonts.get(&f).copied());
+        if let Some(text) = self.comment_decoder.take_pending(encoding) {
+            self.comments.text(self.state.atn, &clean_text(&text));
         }
     }
 
@@ -1220,8 +1288,12 @@ impl<'a> Parser<'a> {
             }
             Capture::None if self.state.suppress || self.state.deleted => {}
             // Hidden text (`\v`) is left out of the document and counted.
-            Capture::None if self.state.hidden => self.hidden.left_out(&text),
+            Capture::None if self.state.hidden => {
+                self.comments.anchors.text(&text);
+                self.hidden.left_out(&text);
+            }
             Capture::None => {
+                self.comments.anchors.text(&text);
                 self.hidden.visible();
                 self.inlines.push(Inline::Text { text, style: self.state.style });
             }
@@ -1238,6 +1310,7 @@ impl<'a> Parser<'a> {
     }
 
     fn end_paragraph(&mut self) -> Result<(), ConvertError> {
+        self.comments.anchors.paragraph_end();
         // Hidden text never runs on across a paragraph boundary.
         self.hidden.visible();
         let inlines = std::mem::take(&mut self.inlines);
@@ -1364,6 +1437,7 @@ impl<'a> Parser<'a> {
     }
 
     fn end_cell(&mut self, depth: usize) -> Result<(), ConvertError> {
+        self.comments.anchors.paragraph_end();
         let inlines = std::mem::take(&mut self.inlines);
         self.dest.listtext = None;
         self.table.end_cell(depth, self.state.block, inlines)
@@ -1393,12 +1467,15 @@ impl<'a> Parser<'a> {
         self.table.collapse_nested()?;
         self.flush_top_table()?;
         self.flush_runs();
+        let (comments, comments_not_extracted) = self.comments.finish();
         Ok(Document {
             blocks: self.blocks,
             notes: self.dest.notes,
             assets: self.assets.assets,
             source_images: None,
             hidden_text_left_out: self.hidden.count(),
+            comments,
+            comments_not_extracted,
         })
     }
 }

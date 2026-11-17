@@ -95,6 +95,8 @@ pub(super) fn parse(pkg: &mut Package, wb_part: &str) -> Result<Document, Conver
     if !sheets.is_empty() && failed == sheets.len() {
         return Err(ConvertError::malformed("no sheet in the workbook could be read"));
     }
+    // Read last, so comment parts never take the archive budget from sheets.
+    doc.comments_not_extracted = super::comments::count(pkg, &sheets);
     Ok(doc)
 }
 

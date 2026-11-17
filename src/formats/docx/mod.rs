@@ -3,6 +3,7 @@
 //! Resolution pipeline: package parts -> style/numbering models ->
 //! spec-order property resolution -> document model.
 
+mod comments;
 mod content;
 mod numbering;
 mod styles;
@@ -65,6 +66,12 @@ pub fn parse(bytes: &[u8]) -> Result<Document, ConvertError> {
         typed_part_path(&doc_rels, &main_part, rel_type::FOOTNOTES, "footnotes.xml");
     let endnotes_part = typed_part_path(&doc_rels, &main_part, rel_type::ENDNOTES, "endnotes.xml");
 
+    // Comments are read last, so their parts can never take the archive
+    // budget from content; their anchors are gathered as the parts that
+    // carry them come by.
+    let comment_parts = comments::parts(&pkg, &doc_rels, &main_part);
+    let mut anchors = comment_parts.as_ref().map(|_| crate::shared::comments::Anchors::default());
+
     let ctx = Ctx {
         pkg: &pkg,
         rels: doc_rels,
@@ -78,6 +85,9 @@ pub fn parse(bytes: &[u8]) -> Result<Document, ConvertError> {
         table_vanish: std::cell::Cell::new(false),
     };
     let blocks = content::parse_blocks(body, &ctx)?;
+    if let Some(anchors) = &mut anchors {
+        comments::walk_text(body, anchors);
+    }
 
     let mut notes = Vec::new();
     for (part, root_name, elem_name, prefix, kind) in [
@@ -90,6 +100,9 @@ pub fn parse(bytes: &[u8]) -> Result<Document, ConvertError> {
         let Some(root) = tree.find(ns::W, root_name) else {
             continue;
         };
+        if let Some(anchors) = &mut anchors {
+            comments::walk_text(root, anchors);
+        }
         let note_rels = read_rels(&mut pkg.borrow_mut(), &rels_part_for(&part))?;
         let note_ctx = ctx.for_part(note_rels, part);
         for note in root.find_all(ns::W, elem_name) {
@@ -110,7 +123,19 @@ pub fn parse(bytes: &[u8]) -> Result<Document, ConvertError> {
 
     let assets = std::mem::take(&mut assets.borrow_mut().assets);
     let hidden_text_left_out = hidden.borrow().count();
-    Ok(Document { blocks, notes, assets, source_images: Some(images.get()), hidden_text_left_out })
+    let (comments, comments_not_extracted) = match (comment_parts, anchors) {
+        (Some(parts), Some(anchors)) => comments::read(&pkg, &parts, anchors.finish()),
+        _ => (Vec::new(), 0),
+    };
+    Ok(Document {
+        blocks,
+        notes,
+        assets,
+        source_images: Some(images.get()),
+        hidden_text_left_out,
+        comments,
+        comments_not_extracted,
+    })
 }
 
 /// Path of a typed related part, resolved against the main part; falls back

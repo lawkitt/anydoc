@@ -4,6 +4,7 @@
 //! policy), rendered as a quote after each slide's content.
 
 mod cascade;
+mod comments;
 
 use crate::error::ConvertError;
 use crate::model::{
@@ -213,7 +214,17 @@ pub fn parse(bytes: &[u8]) -> Result<Document, ConvertError> {
     }
 
     let assets = std::mem::take(&mut assets.borrow_mut().assets);
-    Ok(Document { blocks, notes: Vec::new(), assets, source_images: None, hidden_text_left_out: 0 })
+    // Read last, so comment parts never take the archive budget from slides.
+    let comments_not_extracted = comments::count(&pkg, &slide_paths, &all_rels);
+    Ok(Document {
+        blocks,
+        notes: Vec::new(),
+        assets,
+        source_images: None,
+        hidden_text_left_out: 0,
+        comments: Vec::new(),
+        comments_not_extracted,
+    })
 }
 
 fn rel_target_of_type(rels: &Relationships, base: &str, rel_type: &str) -> Option<String> {

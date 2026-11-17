@@ -3,6 +3,7 @@
 //! OLE-based BIFF (xls). All three share the number format engine and grid
 //! assembly, so one workbook saved in any of them converts identically.
 
+mod comments;
 mod controls;
 mod numfmt;
 mod xls;

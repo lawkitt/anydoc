@@ -7,6 +7,7 @@ pub mod assets;
 pub mod binary;
 pub mod blockstyle;
 pub mod chain;
+pub mod comments;
 pub mod delta;
 pub mod drawingml;
 pub mod fields;

@@ -1,5 +1,6 @@
 //! OpenDocument Text (.odt), Spreadsheet (.ods), and Presentation (.odp).
 
+mod comments;
 mod styles;
 mod table;
 mod text;
@@ -53,7 +54,21 @@ pub fn parse(bytes: &[u8]) -> Result<Document, ConvertError> {
 
     let notes = ctx.notes.into_inner();
     let assets = std::mem::take(&mut assets.borrow_mut().assets);
-    Ok(Document { blocks, notes, assets, source_images: None, hidden_text_left_out: 0 })
+    // Text documents report their comments; spreadsheets and presentations
+    // count them.
+    let (comments, comments_not_extracted) = match body.find(ns::OFFICE, "text") {
+        Some(text) => comments::read(text),
+        None => (Vec::new(), comments::count(body)),
+    };
+    Ok(Document {
+        blocks,
+        notes,
+        assets,
+        source_images: None,
+        hidden_text_left_out: 0,
+        comments,
+        comments_not_extracted,
+    })
 }
 
 /// Encrypted ODF packages carry `manifest:encryption-data` elements on file

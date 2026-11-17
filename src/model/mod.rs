@@ -7,6 +7,7 @@
 
 mod asset;
 mod block;
+mod comment;
 mod inline;
 mod link;
 mod list;
@@ -15,6 +16,7 @@ mod table;
 
 pub use asset::{Asset, AssetId};
 pub use block::Block;
+pub use comment::Comment;
 pub use inline::{Inline, checkbox_text, inlines_are_empty, inlines_to_plain_text};
 pub use link::{AnchorId, ImageSource, LinkTarget};
 pub use list::{List, ListItem, MarkerKind};
@@ -48,6 +50,16 @@ pub struct Document {
     /// spans; hidden whitespace alone is not counted. 0 from the formats
     /// that have no hidden text.
     pub hidden_text_left_out: u32,
+    /// The comments the frontend read as structured data, in document order
+    /// of the comments part (DOCX `word/comments.xml`), of the annotations
+    /// (ODT) or of the annotation groups (RTF). They never reach the blocks.
+    /// Empty from the formats whose comments are only counted.
+    pub comments: Vec<Comment>,
+    /// Comments the source carries that [`Document::comments`] does not
+    /// hold: those of the formats that only count them (binary DOC, PPTX,
+    /// XLSX, ODS, ODP), and those past the per-document cap of the formats
+    /// that read them. 0 when every comment was read, or there are none.
+    pub comments_not_extracted: u32,
 }
 
 /// Footnote or endnote body, referenced from text by [`Inline::NoteRef`].

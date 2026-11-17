@@ -178,6 +178,27 @@ pub struct Conversion {
     /// out, and so is a hyperlink whose whole label is hidden. Always 0 for
     /// the other formats, PDFs included.
     pub hidden_text_left_out: u32,
+    /// The comments the document carries, read as structured data (author,
+    /// date, text, anchor text, replies, resolved state; see
+    /// [`model::Comment`]). Comments never enter the Markdown. Read from
+    /// DOCX, ODT and RTF; empty for every other format, PDFs included (PDF
+    /// annotations are not read). Formats whose comments are only counted
+    /// report them in [`comments_left_out`](Conversion::comments_left_out).
+    /// The order is the document's: DOCX's comments part, ODT annotations
+    /// and RTF annotation groups in document order. A comments part
+    /// that is missing, malformed or over a limit is skipped, never failing
+    /// the conversion, and the comments it held are not reported.
+    pub comments: Vec<model::Comment>,
+    /// Every comment the document carries that conversion read or counted:
+    /// all of them are left out of the Markdown. At least
+    /// `comments.len()`; any more are comments counted but not read:
+    /// binary DOC (its annotation reference table), PPTX (legacy and modern
+    /// comment parts of each slide, replies included), XLSX (threaded
+    /// comments and notes of the visible sheets, a thread's legacy copy not
+    /// counted twice), ODS and ODP annotations, and comments past the
+    /// per-document cap of the formats that read them. 0 for the other
+    /// formats (PPT, XLS, XLSB, EPUB, CSV, PDF).
+    pub comments_left_out: u32,
 }
 
 /// Convert a document file to Markdown. The format is detected from the
@@ -235,6 +256,10 @@ pub fn to_markdown_bytes_with(
         page_count: 0,
         images_left_out,
         hidden_text_left_out: document.hidden_text_left_out,
+        comments_left_out: u32::try_from(document.comments.len())
+            .unwrap_or(u32::MAX)
+            .saturating_add(document.comments_not_extracted),
+        comments: document.comments,
     })
 }
 
@@ -356,6 +381,8 @@ mod images_left_out_tests {
             assets: Vec::new(),
             source_images: None,
             hidden_text_left_out: 0,
+            comments: Vec::new(),
+            comments_not_extracted: 0,
         };
         assert_eq!(images_left_out(&document), 6);
         assert_eq!(images_left_out(&Document::default()), 0);
