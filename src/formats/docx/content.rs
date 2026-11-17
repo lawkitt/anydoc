@@ -45,6 +45,8 @@ pub(super) struct Ctx<'a, 'b> {
     pub numbering: &'b Numbering,
     pub counters: &'b RefCell<Counters>,
     pub assets: &'b RefCell<AssetSink>,
+    /// Pictures met so far (`Document::source_images`).
+    pub images: &'b std::cell::Cell<u32>,
 }
 
 impl<'a, 'b> Ctx<'a, 'b> {
@@ -59,6 +61,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
             numbering: self.numbering,
             counters: self.counters,
             assets: self.assets,
+            images: self.images,
         }
     }
 
@@ -589,6 +592,7 @@ impl<'a, 'b, 'e> InlineWalker<'a, 'b, 'e> {
         // carries a VML preview image next to the o:OLEObject, and the
         // object's identity and payload must win over its preview.
         if let Some(ole) = elem.first_descendant(ns::O_VML, "OLEObject") {
+            self.picture_met();
             let prog_id = ole.attr(ns::O_VML, "ProgID").unwrap_or("object").to_string();
             let alt = if descr.trim().is_empty() {
                 format!("Embedded object: {prog_id}")
@@ -630,6 +634,9 @@ impl<'a, 'b, 'e> InlineWalker<'a, 'b, 'e> {
                 self.ctx.assets,
                 rel_id,
             )?;
+            if !matches!(source, Some(ImageSource::External(_))) {
+                self.picture_met();
+            }
             match source {
                 Some(source) => self.push(Inline::Image { alt: descr, source }),
                 None => {
@@ -642,9 +649,17 @@ impl<'a, 'b, 'e> InlineWalker<'a, 'b, 'e> {
         }
 
         if !descr.trim().is_empty() {
+            self.picture_met();
             self.push(Inline::Image { alt: descr, source: ImageSource::Unavailable });
         }
         Ok(())
+    }
+
+    /// A picture whose content is not text: counted here, before a
+    /// preformatted paragraph flattens it to text or a missing part leaves
+    /// nothing to place.
+    fn picture_met(&self) {
+        self.ctx.images.set(self.ctx.images.get().saturating_add(1));
     }
 
     /// Textual extraction of a chart part via `shared::drawingml`.

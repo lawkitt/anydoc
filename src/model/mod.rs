@@ -35,6 +35,12 @@ pub struct Document {
     pub notes: Vec<Note>,
     /// Every embedded asset, indexed by [`AssetId`].
     pub assets: Vec<Asset>,
+    /// The pictures the source shows whose content is not text (embedded
+    /// pictures and objects, and pictures whose bytes are missing), when the
+    /// frontend counts them as it parses: DOCX does, so a picture with no
+    /// bytes and no alt text, or one in preformatted text (which holds text
+    /// only), still counts. `None` from the other frontends.
+    pub source_images: Option<u32>,
 }
 
 /// Footnote or endnote body, referenced from text by [`Inline::NoteRef`].

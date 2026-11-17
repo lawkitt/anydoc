@@ -213,7 +213,7 @@ pub fn parse(bytes: &[u8]) -> Result<Document, ConvertError> {
     }
 
     let assets = std::mem::take(&mut assets.borrow_mut().assets);
-    Ok(Document { blocks, notes: Vec::new(), assets })
+    Ok(Document { blocks, notes: Vec::new(), assets, source_images: None })
 }
 
 fn rel_target_of_type(rels: &Relationships, base: &str, rel_type: &str) -> Option<String> {

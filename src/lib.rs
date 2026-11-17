@@ -153,8 +153,11 @@ pub struct Conversion {
     /// carry: embedded pictures and objects, and images whose bytes are
     /// missing, which render as their alt text at most. Linked images,
     /// which render as `![alt](url)`, and charts and diagrams, which render
-    /// as text, are not counted. Always 0 for PDFs, which convert without
-    /// the document model.
+    /// as text, are not counted. DOCX counts each picture as it parses
+    /// (`Document::source_images`), so one without bytes or alt text, or one
+    /// in a preformatted paragraph, still counts; the other formats count
+    /// the image inlines their document holds. Always 0 for PDFs, which
+    /// convert without the document model.
     pub images_left_out: u32,
 }
 
@@ -206,11 +209,12 @@ pub fn to_markdown_bytes_with(
     }
     let document = to_document(bytes, format)?;
     let markdown = document_to_markdown(&document);
-    let images_left_out = images_left_out(&document);
+    let images_left_out = document.source_images.unwrap_or_else(|| images_left_out(&document));
     Ok(Conversion { markdown, pages_needing_ocr: Vec::new(), page_count: 0, images_left_out })
 }
 
-/// [`Conversion::images_left_out`] for a parsed document.
+/// [`Conversion::images_left_out`] from a parsed document's image inlines,
+/// for the frontends that do not count `Document::source_images`.
 fn images_left_out(document: &model::Document) -> u32 {
     use model::{Block, CellSlot, ImageSource, Inline};
     fn walk(inlines: &[Inline], count: &mut u32) {
@@ -309,6 +313,7 @@ mod images_left_out_tests {
                 blocks: vec![Block::Heading { level: 1, anchor: None, content: vec![embedded()] }],
             }],
             assets: Vec::new(),
+            source_images: None,
         };
         assert_eq!(images_left_out(&document), 6);
         assert_eq!(images_left_out(&Document::default()), 0);

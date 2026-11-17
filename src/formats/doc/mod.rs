@@ -136,7 +136,7 @@ pub fn parse(bytes: &[u8]) -> Result<Document, ConvertError> {
         notes.push(Note { id, kind, blocks: assembler.build_blocks(lo, hi)? });
     }
     let assets = std::mem::take(&mut assembler.assets.borrow_mut().assets);
-    Ok(Document { blocks, notes, assets })
+    Ok(Document { blocks, notes, assets, source_images: None })
 }
 
 /// Read a PLC's CP array; n is the number of data elements.

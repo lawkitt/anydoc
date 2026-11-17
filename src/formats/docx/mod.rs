@@ -16,7 +16,7 @@ use crate::package::xml::ns;
 use crate::shared::assets::AssetSink;
 use content::Ctx;
 use numbering::Counters;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 
 pub fn parse(bytes: &[u8]) -> Result<Document, ConvertError> {
     let pkg = match Package::open(bytes) {
@@ -58,6 +58,7 @@ pub fn parse(bytes: &[u8]) -> Result<Document, ConvertError> {
 
     let counters = RefCell::new(Counters::default());
     let assets = RefCell::new(AssetSink::new());
+    let images = Cell::new(0);
 
     let footnotes_part =
         typed_part_path(&doc_rels, &main_part, rel_type::FOOTNOTES, "footnotes.xml");
@@ -71,6 +72,7 @@ pub fn parse(bytes: &[u8]) -> Result<Document, ConvertError> {
         numbering: &numbering,
         counters: &counters,
         assets: &assets,
+        images: &images,
     };
     let blocks = content::parse_blocks(body, &ctx)?;
 
@@ -104,7 +106,7 @@ pub fn parse(bytes: &[u8]) -> Result<Document, ConvertError> {
     }
 
     let assets = std::mem::take(&mut assets.borrow_mut().assets);
-    Ok(Document { blocks, notes, assets })
+    Ok(Document { blocks, notes, assets, source_images: Some(images.get()) })
 }
 
 /// Path of a typed related part, resolved against the main part; falls back
