@@ -392,7 +392,7 @@ fn wrappers_unwrap_recursively() {
 }
 
 #[test]
-fn trailing_empty_rows_and_columns_trimmed() {
+fn trailing_empty_rows_trimmed_empty_columns_kept() {
     let empty = Cell::default;
     let filled = |s: &str| Cell::from_inlines(vec![Inline::plain(s)]);
     let md = doc(vec![table_from(
@@ -403,7 +403,18 @@ fn trailing_empty_rows_and_columns_trimmed() {
         ],
         1,
     )]);
-    assert_eq!(md, "| a | b |\n| --- | --- |\n| c |  |\n");
+    assert_eq!(md, "| a | b |  |\n| --- | --- | --- |\n| c |  |  |\n");
+}
+
+#[test]
+fn trailing_empty_column_preserved() {
+    let empty = Cell::default;
+    let filled = |s: &str| Cell::from_inlines(vec![Inline::plain(s)]);
+    let md = doc(vec![table_from(
+        vec![vec![filled("Name"), empty()], vec![filled("Date"), empty()]],
+        1,
+    )]);
+    assert_eq!(md, "| Name |  |\n| --- | --- |\n| Date |  |\n");
 }
 
 #[test]

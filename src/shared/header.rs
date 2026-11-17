@@ -62,8 +62,8 @@ pub fn resolve_header_rows(table: &Table, declared: usize) -> usize {
     let head: Vec<String> = grid[0].iter().map(slot_text).collect();
     let body: Vec<Vec<String>> =
         sample.iter().map(|row| row.iter().map(slot_text).collect()).collect();
-    // Columns past the last one holding content never render, so they take no
-    // part in the checks below.
+    // Columns past the last one holding content are empty throughout (they
+    // render as empty columns), so they take no part in the checks below.
     let content_width =
         |row: &Vec<String>| row.iter().rposition(|v| !v.trim().is_empty()).map_or(0, |i| i + 1);
     let width = std::iter::once(&head).chain(body.iter()).map(content_width).max().unwrap_or(0);
