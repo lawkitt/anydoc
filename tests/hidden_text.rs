@@ -414,3 +414,61 @@ fn rtf_math_runs_follow_their_own_deleted_and_hidden_state() {
         assert_eq!(converted.hidden_text_left_out, stretches, "{src}");
     }
 }
+
+/// A table style's `w:vanish`, through `basedOn` and the conditional parts
+/// its `w:tblLook` turns on, hides cell text; direct vanish-off shows a run.
+#[test]
+fn docx_table_styles_hide_cell_text() {
+    let styles = concat!(
+        r#"<w:style w:type="table" w:styleId="HiddenTable"><w:name w:val="Hidden Table"/><w:rPr><w:vanish/></w:rPr></w:style>"#,
+        r#"<w:style w:type="table" w:styleId="InheritsHiddenTable"><w:basedOn w:val="HiddenTable"/></w:style>"#,
+        r#"<w:style w:type="table" w:styleId="HiddenHeader"><w:name w:val="Hidden Header"/>"#,
+        r#"<w:tblStylePr w:type="firstRow"><w:rPr><w:vanish/></w:rPr></w:tblStylePr></w:style>"#,
+    );
+    let cell = |text: &str, rpr: &str| format!("<w:tc><w:p>{}</w:p></w:tc>", run(text, rpr));
+    let table = |style: &str, look: &str, rows: &[[String; 2]]| {
+        let rows: String = rows.iter().map(|[a, b]| format!("<w:tr>{a}{b}</w:tr>")).collect();
+        format!(r#"<w:tbl><w:tblPr><w:tblStyle w:val="{style}"/>{look}</w:tblPr>{rows}</w:tbl>"#)
+    };
+    let body = [
+        table(
+            "HiddenTable",
+            "",
+            &[[
+                cell("SECRET-ONE", ""),
+                cell("Shown by direct formatting.", r#"<w:vanish w:val="0"/>"#),
+            ]],
+        ),
+        table("InheritsHiddenTable", "", &[[cell("SECRET-TWO", ""), cell("SECRET-THREE", "")]]),
+        table(
+            "HiddenHeader",
+            r#"<w:tblLook w:firstRow="1"/>"#,
+            &[
+                [cell("SECRET-FOUR", ""), cell("SECRET-FIVE", "")],
+                [cell("Body", ""), cell("cells", "")],
+            ],
+        ),
+        // The same style without firstRow in its look hides nothing.
+        table(
+            "HiddenHeader",
+            r#"<w:tblLook w:firstRow="0"/>"#,
+            &[[cell("Head", ""), cell("row", "")]],
+        ),
+    ]
+    .concat();
+    let converted = convert(&docx(&body, styles, ""), Format::Docx);
+    let markdown = &converted.markdown;
+    assert!(!markdown.contains("SECRET"), "{markdown}");
+    for shown in ["Shown by direct formatting.", "Body", "cells", "Head", "row"] {
+        assert!(markdown.contains(shown), "{shown}: {markdown}");
+    }
+    assert_eq!(converted.hidden_text_left_out, 5);
+}
+
+#[test]
+fn rtf_a_deleted0_math_run_in_a_deleted_group_stays() {
+    let src = r"{\rtf1 {\deleted{\mmath{\*\moMath{\mr SECRET}{\mr\deleted0 x}}}}\par}";
+    let converted = convert(src.as_bytes(), Format::Rtf);
+    assert_eq!(converted.markdown.trim(), "$x$");
+    assert_eq!(converted.hidden_text_left_out, 0);
+}

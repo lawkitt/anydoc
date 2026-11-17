@@ -50,6 +50,9 @@ pub(super) struct Ctx<'a, 'b> {
     pub images: &'b std::cell::Cell<u32>,
     /// Hidden text left out so far (`Document::hidden_text_left_out`).
     pub hidden: &'b RefCell<HiddenText>,
+    /// Whether the table style of the cell being parsed hides its text
+    /// (`w:vanish`), a toggle layer under the paragraph style.
+    pub table_vanish: std::cell::Cell<bool>,
 }
 
 impl<'a, 'b> Ctx<'a, 'b> {
@@ -66,6 +69,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
             assets: self.assets,
             images: self.images,
             hidden: self.hidden,
+            table_vanish: std::cell::Cell::new(false),
         }
     }
 
@@ -165,7 +169,8 @@ fn collect_blocks(
                 Some(id) => ctx.styles.run_toggles(id)?,
                 None => Default::default(),
             };
-            let base_hidden = ctx.styles.doc_defaults_hidden ^ parity.vanish;
+            let base_hidden =
+                ctx.styles.doc_defaults_hidden ^ ctx.table_vanish.get() ^ parity.vanish;
             let mut walker = InlineWalker::new(ctx, ctx.styles.doc_defaults, base_hidden);
             let math = walker.visible_math(child)?;
             blocks.extend(omath_para_to_tex(&math).into_iter().map(Block::Math));
@@ -290,7 +295,7 @@ fn parse_paragraph(p: &Element, ctx: &Ctx) -> Result<(ParaKind, Vec<Piece>, bool
     };
     let paragraph_level = parity.apply_over(ctx.styles.doc_defaults);
     // `w:vanish` is a toggle property too, over the docDefaults base.
-    let paragraph_hidden = ctx.styles.doc_defaults_hidden ^ parity.vanish;
+    let paragraph_hidden = ctx.styles.doc_defaults_hidden ^ ctx.table_vanish.get() ^ parity.vanish;
 
     let kind = match heading {
         Some(level) => {
@@ -1004,22 +1009,44 @@ pub(super) fn parse_table(tbl: &Element, ctx: &Ctx) -> Result<Vec<Block>, Conver
         .take_while(|tr| tr.find(ns::W, "trPr").and_then(|p| on_off(p, "tblHeader")) == Some(true))
         .count();
 
+    let style = TableStyle::of(tbl);
+    let width = matrix.iter().map(|row| row.iter().map(|tc| tc.col_span).sum::<usize>()).max();
     let mut builder = GridBuilder::new();
-    for row in &matrix {
+    for (r, row) in matrix.iter().enumerate() {
         builder.next_row();
+        let mut col = 0;
         for tc in row {
+            let first_col = col;
+            col += tc.col_span;
             if tc.covered {
                 for _ in 0..tc.col_span {
                     builder.covered();
                 }
             } else {
-                let mut blocks = match tc.elem {
-                    Some(elem) => parse_blocks(elem, ctx)?,
-                    None => Vec::new(),
+                let vanish = match style.id {
+                    Some(id) => {
+                        let last_row = r + 1 == rows_len;
+                        let last_col = Some(col) == width;
+                        ctx.styles.table_vanish(
+                            id,
+                            &style.conditions(r == 0, last_row, first_col == 0, last_col),
+                        )?
+                    }
+                    None => false,
                 };
-                for merged in &tc.merged {
-                    blocks.extend(parse_blocks(merged, ctx)?);
-                }
+                let outer = ctx.table_vanish.replace(vanish);
+                let parsed = (|| {
+                    let mut blocks = match tc.elem {
+                        Some(elem) => parse_blocks(elem, ctx)?,
+                        None => Vec::new(),
+                    };
+                    for merged in &tc.merged {
+                        blocks.extend(parse_blocks(merged, ctx)?);
+                    }
+                    Ok::<_, ConvertError>(blocks)
+                })();
+                ctx.table_vanish.set(outer);
+                let blocks = parsed?;
                 builder.place(Cell::spanning(blocks, tc.col_span as u32, tc.row_span as u32))?;
             }
         }
@@ -1030,6 +1057,64 @@ pub(super) fn parse_table(tbl: &Element, ctx: &Ctx) -> Result<Vec<Block>, Conver
     }
     table.header_rows = resolve_header_rows(&table, header_rows);
     Ok(vec![Block::Table(table)])
+}
+
+/// A table's style (`w:tblStyle`) and which of its conditional parts its
+/// `w:tblLook` turns on.
+struct TableStyle<'e> {
+    id: Option<&'e str>,
+    first_row: bool,
+    last_row: bool,
+    first_col: bool,
+    last_col: bool,
+}
+
+impl<'e> TableStyle<'e> {
+    fn of(tbl: &'e Element) -> Self {
+        let tblpr = tbl.find(ns::W, "tblPr");
+        let id = tblpr.and_then(|p| p.find(ns::W, "tblStyle")).and_then(|e| e.attr(ns::W, "val"));
+        let look = tblpr.and_then(|p| p.find(ns::W, "tblLook"));
+        // Each flag is an ST_OnOff attribute, or a bit of the older hex `w:val`
+        // form; an absent flag is off.
+        let mask = look
+            .and_then(|l| l.attr(ns::W, "val"))
+            .and_then(|v| u16::from_str_radix(v, 16).ok())
+            .unwrap_or(0);
+        let flag = |name: &str, bit: u16| match look.and_then(|l| l.attr(ns::W, name)) {
+            Some(value) => matches!(value, "1" | "true" | "on"),
+            None => mask & bit != 0,
+        };
+        TableStyle {
+            id,
+            first_row: flag("firstRow", 0x0020),
+            last_row: flag("lastRow", 0x0040),
+            first_col: flag("firstColumn", 0x0080),
+            last_col: flag("lastColumn", 0x0100),
+        }
+    }
+
+    /// The conditional parts that apply to a cell at the given edges.
+    /// Banded rows and columns and the corner cells are not resolved.
+    fn conditions(
+        &self,
+        first_row: bool,
+        last_row: bool,
+        first_col: bool,
+        last_col: bool,
+    ) -> Vec<&'static str> {
+        let mut conditions = vec!["wholeTable"];
+        for (on, at, name) in [
+            (self.first_row, first_row, "firstRow"),
+            (self.last_row, last_row, "lastRow"),
+            (self.first_col, first_col, "firstCol"),
+            (self.last_col, last_col, "lastCol"),
+        ] {
+            if on && at {
+                conditions.push(name);
+            }
+        }
+        conditions
+    }
 }
 
 fn collect_row_cells<'e>(parent: &'e Element, cells: &mut Vec<TcInfo<'e>>) {

@@ -56,6 +56,16 @@ fn toggle(operand: &[u8], base: bool) -> Option<bool> {
     }
 }
 
+/// sprmCFVanish: hidden text.
+pub const SPRM_C_F_VANISH: u16 = 0x083C;
+
+/// Whether a grpprl carries `sprm` at all.
+pub fn chpx_has(grpprl: &[u8], sprm: u16) -> bool {
+    let mut found = false;
+    walk_sprms(grpprl, |s, _| found |= s == sprm);
+    found
+}
+
 /// The `sprmCIstd` character-style reference in a CHPX, if any.
 pub fn chpx_istd(grpprl: &[u8]) -> Option<u16> {
     let mut istd = None;
@@ -110,7 +120,7 @@ pub fn apply_chpx(grpprl: &[u8], current: Chp, style_base: Style, hidden_base: b
             }
         }
         // sprmCFVanish (hidden text) is a toggle too.
-        0x083C => {
+        SPRM_C_F_VANISH => {
             if let Some(v) = toggle(operand, hidden_base) {
                 chp.hidden = v;
             }

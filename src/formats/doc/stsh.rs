@@ -2,7 +2,9 @@
 //! `istdBase` inheritance chains and UPX formatting payloads, resolved into
 //! effective per-style character formatting and paragraph properties.
 
-use crate::formats::doc::sprm::{PapDelta, apply_pap_sprms, apply_style_chpx};
+use crate::formats::doc::sprm::{
+    PapDelta, SPRM_C_F_VANISH, apply_pap_sprms, apply_style_chpx, chpx_has,
+};
 use crate::model::Style;
 use crate::shared::binary::{get_u16, get_u32, utf16le_units};
 use crate::shared::blockstyle::{self, BlockStyle};
@@ -16,6 +18,9 @@ pub struct ResolvedStyle {
     pub chp: Style,
     /// Whether the chain hides text (`sprmCFVanish`).
     pub hidden: bool,
+    /// Whether any style in the chain sets `sprmCFVanish`, on or off. A
+    /// character style that does not leaves the paragraph style's hiding.
+    pub hidden_specified: bool,
     /// Effective paragraph properties of the chain.
     pub pap: PapDelta,
     /// Heading level for built-in `heading N` styles.
@@ -190,6 +195,7 @@ fn resolve(
             base.pap = base.pap.merge(delta);
         }
         (base.chp, base.hidden) = apply_style_chpx(&std.upx_chpx, base.chp, base.hidden);
+        base.hidden_specified |= chpx_has(&std.upx_chpx, SPRM_C_F_VANISH);
         if let sti @ 1..=9 = std.sti {
             base.heading = Some(sti as u8);
         }

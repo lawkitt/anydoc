@@ -1095,10 +1095,10 @@ impl<'a> Parser<'a> {
         let Some(math) = self.dest.math.take() else {
             return;
         };
-        // Runs after the group closes: the state is the enclosing one. Its
-        // runs were filtered one by one (a `\v0` run in a hidden zone shows),
-        // so a zone with no visible run is left out whole.
-        if self.state.deleted || !math.has_visible_text {
+        // Its runs were filtered one by one against their own state (a `\v0`
+        // run in a hidden zone shows, as does a `\deleted0` run in a deleted
+        // group), so a zone with no visible run is left out whole.
+        if !math.has_visible_text {
             return;
         }
         let (lines, display) = math.finish();

@@ -75,6 +75,7 @@ pub fn parse(bytes: &[u8]) -> Result<Document, ConvertError> {
         assets: &assets,
         images: &images,
         hidden: &hidden,
+        table_vanish: std::cell::Cell::new(false),
     };
     let blocks = content::parse_blocks(body, &ctx)?;
 
