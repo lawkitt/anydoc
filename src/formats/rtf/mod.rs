@@ -1411,15 +1411,28 @@ mod tests {
     /// dropping the tree.
     #[test]
     fn deep_math_nesting_stays_within_the_xml_depth_bound() {
-        let mut src = String::from(r"{\rtf1\ansi {\*\mmath ");
-        // Stay under the group bound so this exercises the math cap alone.
+        // An active zone (`\mmath` without `\*`, which would suppress it)
+        // whose groups each name an element (`\me`), so every level nests.
+        fn nested(groups: usize) -> String {
+            let mut src = String::from(r"{\rtf1\ansi {\mmath{\*\moMath ");
+            src.push_str(&r"{\me ".repeat(groups));
+            src.push_str(r"{\mr x}");
+            src.push_str(&"}".repeat(groups));
+            src.push_str(r"}}\par}");
+            src
+        }
+        let markdown = |src: String| {
+            let doc = parse(src.as_bytes()).expect("bounded math converts");
+            crate::render::markdown::document_to_markdown(&doc)
+        };
+        // Under the cap the whole tree serializes.
+        assert_eq!(markdown(nested(limits::MAX_XML_DEPTH / 2)).trim(), "$x$");
+        // Twice the cap, still under the group bound so this exercises the
+        // math cap alone: it terminates without overflowing the stack. The
+        // run past the cap is not kept.
         let groups = limits::MAX_XML_DEPTH * 2;
-        src.push_str(&"{".repeat(groups));
-        src.push('x');
-        src.push_str(&"}".repeat(groups));
-        src.push_str("}}");
-        // The contract is that it terminates without overflowing the stack.
-        let _ = parse(src.as_bytes());
+        assert!(groups + 8 < limits::MAX_RTF_GROUP_DEPTH);
+        markdown(nested(groups));
     }
 
     #[test]
