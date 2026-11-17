@@ -628,8 +628,8 @@ impl<'a, 'b, 'e> InlineWalker<'a, 'b, 'e> {
                     }
                 }
                 "sym" => {
-                    if let Some(glyph) = super::symbols::checkbox(child) {
-                        self.push_text(glyph.to_string(), style, hidden);
+                    if let Some(glyph) = super::symbols::glyph(child) {
+                        self.push_text(glyph, style, hidden);
                     }
                 }
                 "tab" | "ptab" => self.push_text(" ".into(), Style::PLAIN, hidden),
