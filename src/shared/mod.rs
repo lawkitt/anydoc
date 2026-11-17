@@ -12,6 +12,7 @@ pub mod drawingml;
 pub mod fields;
 pub mod grid;
 pub mod header;
+pub mod hidden;
 pub mod html;
 pub mod list;
 pub mod math;

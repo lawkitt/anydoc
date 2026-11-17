@@ -68,6 +68,8 @@ pub struct StyleDef {
     pub delta: StyleDelta,
     /// The block container the style's name designates.
     pub block: Option<BlockStyle>,
+    /// Hidden text (`\v`), when the style sets it.
+    pub hidden: Option<bool>,
 }
 
 #[derive(Debug, Default)]
@@ -214,6 +216,11 @@ fn parse_stylesheet(
                         def.delta.italic = Some(param != Some(0));
                     }
                 }
+                "v" => {
+                    if let Some((_, def, _)) = current.as_mut() {
+                        def.hidden = Some(param != Some(0));
+                    }
+                }
                 _ => {}
             },
             _ => {}
@@ -240,6 +247,7 @@ fn parse_stylesheet(
             resolved.delta = resolved.delta.merge(def.delta);
             resolved.outline = def.outline.or(resolved.outline);
             resolved.block = def.block.or(resolved.block);
+            resolved.hidden = def.hidden.or(resolved.hidden);
         }
         styles.insert(id, resolved);
     }

@@ -14,6 +14,7 @@ use crate::package::xml::{Element, Node, ns};
 use crate::shared::blockstyle::{BlockStyle, StyledRun};
 use crate::shared::delta::rebase_emphasis;
 use crate::shared::fields::field_result;
+use crate::shared::hidden::HiddenText;
 use crate::shared::list::{ListEntry, ListKey, MarkerKind, flush_list};
 use crate::shared::math::{math_lines, omath_para_to_tex};
 use crate::shared::text::clean_text;
@@ -81,6 +82,9 @@ struct CharState {
     /// Inside a `\deleted` revision: text a viewer shows struck out as
     /// removed, not part of the document's current text.
     deleted: bool,
+    /// Hidden text (`\v`): left out of the document and counted
+    /// (`Document::hidden_text_left_out`).
+    hidden: bool,
     capture: Capture,
     note: Option<NoteKind>,
 }
@@ -101,6 +105,7 @@ impl Default for CharState {
             style_base: Style::PLAIN,
             suppress: false,
             deleted: false,
+            hidden: false,
             capture: Capture::None,
             note: None,
         }
@@ -634,6 +639,7 @@ struct Parser<'a> {
     table: TableState,
     dest: Destinations,
     assets: crate::shared::assets::AssetSink,
+    hidden: HiddenText,
 }
 
 impl<'a> Parser<'a> {
@@ -657,6 +663,7 @@ impl<'a> Parser<'a> {
             table: TableState::new(),
             dest: Destinations::default(),
             assets: crate::shared::assets::AssetSink::new(),
+            hidden: HiddenText::default(),
         }
     }
 
@@ -807,10 +814,15 @@ impl<'a> Parser<'a> {
                 self.flush_pending();
                 self.state.deleted = on;
             }
+            "v" => {
+                self.flush_pending();
+                self.state.hidden = on;
+            }
             "plain" => {
                 self.flush_pending();
                 let font = self.state.font;
                 self.state.style = Style::PLAIN;
+                self.state.hidden = false;
                 self.state.font = font;
             }
             "s" => {
@@ -823,6 +835,9 @@ impl<'a> Parser<'a> {
                     self.state.block = def.block;
                     self.state.style = def.delta.apply(self.state.style);
                     self.state.style_base = self.state.style;
+                    if let Some(hidden) = def.hidden {
+                        self.state.hidden = hidden;
+                    }
                 }
             }
             "par" | "sect" => {
@@ -854,7 +869,7 @@ impl<'a> Parser<'a> {
             // boundary they carry is not.
             "line" | "lbr" | "page" | "column" => {
                 self.flush_pending();
-                if !self.state.suppress && !self.state.deleted {
+                if !self.state.suppress && !self.state.deleted && !self.state.hidden {
                     self.inlines.push(Inline::LineBreak);
                 }
             }
@@ -1188,10 +1203,12 @@ impl<'a> Parser<'a> {
                     math.push_text(text);
                 }
             }
+            Capture::None if self.state.suppress || self.state.deleted => {}
+            // Hidden text (`\v`) is left out of the document and counted.
+            Capture::None if self.state.hidden => self.hidden.left_out(&text),
             Capture::None => {
-                if !self.state.suppress && !self.state.deleted {
-                    self.inlines.push(Inline::Text { text, style: self.state.style });
-                }
+                self.hidden.visible();
+                self.inlines.push(Inline::Text { text, style: self.state.style });
             }
         }
     }
@@ -1206,6 +1223,8 @@ impl<'a> Parser<'a> {
     }
 
     fn end_paragraph(&mut self) -> Result<(), ConvertError> {
+        // Hidden text never runs on across a paragraph boundary.
+        self.hidden.visible();
         let inlines = std::mem::take(&mut self.inlines);
         let listtext = self.dest.listtext.take();
         let math_display = std::mem::take(&mut self.dest.math_display);
@@ -1364,6 +1383,7 @@ impl<'a> Parser<'a> {
             notes: self.dest.notes,
             assets: self.assets.assets,
             source_images: None,
+            hidden_text_left_out: self.hidden.count(),
         })
     }
 }

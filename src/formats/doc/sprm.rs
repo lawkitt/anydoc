@@ -11,6 +11,8 @@ use crate::shared::binary::{get_u16, get_u32};
 pub struct Chp {
     pub style: Style,
     pub deleted: bool,
+    /// `sprmCFVanish`: hidden text, left out of the document and counted.
+    pub hidden: bool,
 }
 
 fn sprm_operand_len(sprm: u16, operand: &[u8]) -> usize {
@@ -78,8 +80,9 @@ pub fn chpx_pic_location(grpprl: &[u8]) -> Option<u32> {
 }
 
 /// Apply a CHPX grpprl over `current`, resolving toggle operands against the
-/// style chain's value (`style_base`), per the published algorithm.
-pub fn apply_chpx(grpprl: &[u8], current: Chp, style_base: Style) -> Chp {
+/// style chain's value (`style_base`, and `hidden_base` for vanish), per the
+/// published algorithm.
+pub fn apply_chpx(grpprl: &[u8], current: Chp, style_base: Style, hidden_base: bool) -> Chp {
     let mut chp = current;
     walk_sprms(grpprl, |sprm, operand| match sprm {
         // MS-DOC 2.6.1: sprmCFRMarkDel uses ToggleOperand too. UpxChpx
@@ -104,6 +107,12 @@ pub fn apply_chpx(grpprl: &[u8], current: Chp, style_base: Style) -> Chp {
         0x0837 => {
             if let Some(v) = toggle(operand, style_base.strike) {
                 chp.style.strike = v;
+            }
+        }
+        // sprmCFVanish (hidden text) is a toggle too.
+        0x083C => {
+            if let Some(v) = toggle(operand, hidden_base) {
+                chp.hidden = v;
             }
         }
         _ => {}
@@ -261,7 +270,10 @@ fn parse_tdef_table(operand: &[u8]) -> Option<Tap> {
 }
 
 /// A CHPX grpprl interpreted as a character-style *definition* layer: the
-/// parent's value is the base for its toggles.
-pub fn apply_style_chpx(grpprl: &[u8], parent: Style) -> Style {
-    apply_chpx(grpprl, Chp { style: parent, deleted: false }, parent).style
+/// parent's value is the base for its toggles. Returns the style and whether
+/// it hides text.
+pub fn apply_style_chpx(grpprl: &[u8], parent: Style, parent_hidden: bool) -> (Style, bool) {
+    let current = Chp { style: parent, deleted: false, hidden: parent_hidden };
+    let chp = apply_chpx(grpprl, current, parent, parent_hidden);
+    (chp.style, chp.hidden)
 }

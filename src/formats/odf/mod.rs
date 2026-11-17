@@ -53,7 +53,7 @@ pub fn parse(bytes: &[u8]) -> Result<Document, ConvertError> {
 
     let notes = ctx.notes.into_inner();
     let assets = std::mem::take(&mut assets.borrow_mut().assets);
-    Ok(Document { blocks, notes, assets, source_images: None })
+    Ok(Document { blocks, notes, assets, source_images: None, hidden_text_left_out: 0 })
 }
 
 /// Encrypted ODF packages carry `manifest:encryption-data` elements on file

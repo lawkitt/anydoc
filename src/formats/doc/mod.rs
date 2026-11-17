@@ -21,6 +21,7 @@ use crate::shared::blockstyle::StyledRun;
 use crate::shared::delta::rebase_emphasis;
 use crate::shared::fields::{FieldFrame, field_result};
 use crate::shared::grid::{CellProp, GridRow, build_edge_table};
+use crate::shared::hidden::HiddenText;
 use crate::shared::list::MarkerKind;
 use crate::shared::list::{ListEntry, ListKey, flush_list};
 use lists::{LEVELS, ListDef, Lists};
@@ -116,6 +117,7 @@ pub fn parse(bytes: &[u8]) -> Result<Document, ConvertError> {
         counters: std::cell::RefCell::new(Counters::default()),
         data,
         assets: std::cell::RefCell::new(AssetSink::new()),
+        hidden: std::cell::RefCell::new(HiddenText::default()),
     };
     let blocks = assembler.build_blocks(0, main_end)?;
     let mut notes = Vec::new();
@@ -138,7 +140,8 @@ pub fn parse(bytes: &[u8]) -> Result<Document, ConvertError> {
         notes.push(Note { id, kind, blocks: assembler.build_blocks(lo, hi)? });
     }
     let assets = std::mem::take(&mut assembler.assets.borrow_mut().assets);
-    Ok(Document { blocks, notes, assets, source_images: None })
+    let hidden_text_left_out = assembler.hidden.borrow().count();
+    Ok(Document { blocks, notes, assets, source_images: None, hidden_text_left_out })
 }
 
 /// Read a PLC's CP array; n is the number of data elements.
@@ -265,6 +268,7 @@ fn prm0_grpprl(prm: u16) -> Option<Vec<u8>> {
         0x55 => 0x0835, // sprmCFBold
         0x56 => 0x0836, // sprmCFItalic
         0x57 => 0x0837, // sprmCFStrike
+        0x5C => 0x083C, // sprmCFVanish
         0x78 => 0x2640, // sprmPOutLvl
         _ => return None,
     };
@@ -621,6 +625,8 @@ struct Assembler {
     /// The Data stream, for `sprmCPicLocation` picture payloads.
     data: Vec<u8>,
     assets: std::cell::RefCell<AssetSink>,
+    /// Hidden text left out so far (`Document::hidden_text_left_out`).
+    hidden: std::cell::RefCell<HiddenText>,
 }
 
 /// A paragraph's resolved properties: the style chain's contribution merged
@@ -746,6 +752,22 @@ impl Assembler {
                     continue;
                 }
             }
+            // Hidden text (sprmCFVanish) is left out and counted. Paragraph,
+            // cell, field and picture marks keep their structure, and a note
+            // reference stays, as in the other Word frontends.
+            if chp.hidden
+                && !matches!(
+                    c,
+                    '\r' | '\u{1}' | '\u{7}' | '\u{c}' | '\u{e}' | '\u{13}' | '\u{14}' | '\u{15}'
+                )
+                && !self.note_refs.contains_key(&i)
+            {
+                if !c.is_control() {
+                    self.hidden.borrow_mut().left_out(c.encode_utf8(&mut [0; 4]));
+                }
+                i += 1;
+                continue;
+            }
             if let Some(id) = self.note_refs.get(&i) {
                 para.push_inline(Inline::NoteRef(id.clone()));
                 i += 1;
@@ -753,6 +775,8 @@ impl Assembler {
             }
             match c {
                 '\r' | '\u{7}' | '\u{c}' | '\u{e}' => {
+                    // Hidden text never runs on across a paragraph boundary.
+                    self.hidden.borrow_mut().visible();
                     let pap = self.effective_pap(fc, i);
                     let inlines = std::mem::replace(&mut para, ParaBuilder::new()).finish();
                     let is_cell_mark = c == '\u{7}';
@@ -831,6 +855,7 @@ impl Assembler {
                 '\u{2}' | '\u{5}' | '\u{8}' | '\u{1f}' => {}
                 c if c.is_control() => {}
                 c => {
+                    self.hidden.borrow_mut().visible();
                     let c = if c == '(' { self.symbol_at(fc, i).unwrap_or(c) } else { c };
                     para.push_char(c, chp.style);
                 }
@@ -856,12 +881,13 @@ impl Assembler {
         let para_istd = self.papx.lookup(fc).map(|p| p.istd).unwrap_or(0);
         let chpx = self.chpx.lookup(fc).map(|p| p.chpx.as_slice()).unwrap_or(&[]);
         let istd = chpx_istd(chpx).unwrap_or(para_istd);
-        let base = self.stylesheet.get(istd).chp;
-        let mut props = apply_chpx(chpx, Chp { style: base, deleted: false }, base);
+        let style = self.stylesheet.get(istd);
+        let (base, hidden) = (style.chp, style.hidden);
+        let mut props = apply_chpx(chpx, Chp { style: base, deleted: false, hidden }, base, hidden);
         if let Some(&piece_idx) = self.text.piece_of.get(char_index)
             && let Some(piece_prc) = self.piece_prm(piece_idx as usize)
         {
-            props = apply_chpx(piece_prc, props, base);
+            props = apply_chpx(piece_prc, props, base, hidden);
         }
         props
     }

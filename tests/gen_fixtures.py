@@ -2293,6 +2293,91 @@ def ocr_pdfs():
     ]))
 
 
+# ---------------------------------------------------------------------------
+# Hidden-formatted text (lawkitt fork): Word's hidden character property never
+# reaches the Markdown, and `Conversion::hidden_text_left_out` counts the
+# stretches left out. Every hidden word is spelled SECRET-*.
+
+def hidden_docx():
+    def r(text, rpr=""):
+        rpr = f"<w:rPr>{rpr}</w:rPr>" if rpr else ""
+        return f'<w:r>{rpr}<w:t xml:space="preserve">{text}</w:t></w:r>'
+
+    def p(*runs, pstyle=None):
+        ppr = f'<w:pPr><w:pStyle w:val="{pstyle}"/></w:pPr>' if pstyle else ""
+        return f"<w:p>{ppr}{''.join(runs)}</w:p>"
+
+    vanish = "<w:vanish/>"
+    body = "".join([
+        # Direct formatting: 1 stretch.
+        p(r("Visible start "), r("SECRET-ONE ", vanish), r("visible end.")),
+        # A character style hides, also through basedOn: 1 + 1.
+        p(r("Character style "), r("SECRET-TWO ", '<w:rStyle w:val="HiddenChar"/>'), r("hides.")),
+        p(r("Inherited "), r("SECRET-THREE ", '<w:rStyle w:val="InheritsHidden"/>'), r("style.")),
+        # Direct w:val="0" turns the style's vanish off: visible.
+        p(r("Shown "), r("despite the style.", '<w:rStyle w:val="HiddenChar"/><w:vanish w:val="0"/>')),
+        # A paragraph style hides its runs; w:val="false" shows one again: 1.
+        p(r("SECRET-FOUR"), r("Shown in a hidden paragraph.", '<w:vanish w:val="false"/>'),
+          pstyle="HiddenPara"),
+        # vanish is a toggle: a hiding character style in a hiding paragraph
+        # style shows the run.
+        p(r("Toggled back on.", '<w:rStyle w:val="HiddenChar"/>'), pstyle="HiddenPara"),
+        # Adjacent hidden runs are one stretch; visible text starts another: 2.
+        p(r("Two "), r("SECRET-FIVE ", vanish), r("SECRET-SIX ", "<w:b/>" + vanish),
+          r("stretches"), r(" SECRET-SEVEN", vanish), r(".")),
+        # Hidden whitespace alone is left out but not counted; so is a
+        # hidden line break.
+        p(r("a"), r(" ", vanish), r("b")),
+        p(r("line one "), f"<w:r><w:rPr>{vanish}</w:rPr><w:br/></w:r>", r("same line")),
+    ])
+    table = ("<w:tbl><w:tr><w:tc>" + p(r("Cell")) + "</w:tc><w:tc>"
+             + p(r("Kept "), r("SECRET-EIGHT", vanish)) + "</w:tc></w:tr></w:tbl>")
+    document = (f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                f"<w:document {W}><w:body>{body}{table}"
+                + p(r("After the table.")) + "</w:body></w:document>")
+    styles = (f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+              f"<w:styles {W}>"
+              "<w:docDefaults><w:rPrDefault><w:rPr/></w:rPrDefault></w:docDefaults>"
+              '<w:style w:type="paragraph" w:styleId="HiddenPara"><w:name w:val="Hidden Para"/>'
+              "<w:rPr><w:vanish/></w:rPr></w:style>"
+              '<w:style w:type="character" w:styleId="HiddenChar"><w:name w:val="Hidden Char"/>'
+              "<w:rPr><w:vanish/></w:rPr></w:style>"
+              '<w:style w:type="character" w:styleId="InheritsHidden"><w:name w:val="Inherits Hidden"/>'
+              '<w:basedOn w:val="HiddenChar"/></w:style>'
+              "</w:styles>")
+    write_zip(OUT / "docx" / "handmade-hidden.docx", [
+        ("[Content_Types].xml", CONTENT_TYPES_BASE.format(extra="")),
+        ("_rels/.rels", ROOT_RELS),
+        ("word/document.xml", document),
+        ("word/styles.xml", styles),
+    ])
+
+
+def hidden_rtf():
+    parts = [
+        rb"{\rtf1\ansi\ansicpg1252\deff0",
+        rb"{\fonttbl{\f0\fcharset0 Arial;}}",
+        rb"{\stylesheet{\s0 Normal;}{\s1\v Hidden Para;}}",
+        # A hidden group: 1.
+        rb"\pard\plain Visible start {\v SECRET-ONE }visible end.\par",
+        # \v0 turns it off inline: 1.
+        rb"\pard\plain Inline \v SECRET-TWO\v0  shown again.\par",
+        # \plain resets character formatting, hidden text included: 1.
+        rb"\pard\plain Reset {\v SECRET-THREE \plain by plain}.\par",
+        # A paragraph style that hides; \v0 shows a group again: 1.
+        rb"\pard\plain\s1 SECRET-FOUR{\v0 Shown in a hidden paragraph.}\par",
+        # Adjacent hidden groups are one stretch; visible text starts another: 2.
+        rb"\pard\plain Two {\v SECRET-FIVE }{\b\v SECRET-SIX }stretches{\v  SECRET-SEVEN}.\par",
+        # Hidden whitespace alone is left out but not counted; so is a hidden
+        # line break.
+        rb"\pard\plain a{\v  }b\par",
+        rb"\pard\plain line one {\v\line}same line\par",
+        rb"}",
+    ]
+    (OUT / "rtf").mkdir(parents=True, exist_ok=True)
+    (OUT / "rtf" / "handmade-hidden.rtf").write_bytes(b"\n".join(parts))
+
+
 def main():
     skip_office = "--skip-office" in sys.argv
     for sub in ["odt", "docx", "doc", "rtf", "ods", "xlsx", "xls", "csv",
@@ -2351,6 +2436,8 @@ def main():
     math_odt()
     math_epub()
     math_rtf()
+    hidden_docx()
+    hidden_rtf()
     csvs()
     malformed()
     abuse()
