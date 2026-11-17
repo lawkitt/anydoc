@@ -139,18 +139,20 @@ fn cell_block_text(block: &Block, rc: &Ctx, parts: &mut Vec<String>) {
             }
         }
         Block::Table(table) => {
-            // Keep empty cells in the join so values stay in their source
-            // column positions.
+            // A GFM cell cannot hold a grid, so a table nested in a
+            // multi-cell table (a single-cell wrapper unwraps instead) gives
+            // one line per non-empty cell, row by row, like a cell's other
+            // blocks. Joining a row's cells with a separator such as ` / `
+            // would put characters in the text that the document doesn't
+            // have (firecrawl/anydoc#14).
             for row in &table.grid {
-                let cells: Vec<String> = row
-                    .iter()
-                    .map(|slot| match slot {
-                        CellSlot::Origin(cell) => render_cell(cell, rc),
-                        CellSlot::Covered { .. } => String::new(),
-                    })
-                    .collect();
-                if cells.iter().any(|c| !c.is_empty()) {
-                    parts.push(cells.join(" / "));
+                for slot in row {
+                    if let CellSlot::Origin(cell) = slot {
+                        let text = render_cell(cell, rc);
+                        if !text.is_empty() {
+                            parts.push(text);
+                        }
+                    }
                 }
             }
         }

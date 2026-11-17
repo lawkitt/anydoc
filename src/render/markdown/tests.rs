@@ -338,7 +338,7 @@ fn data_table_1x1_not_unwrapped() {
 fn single_cell_wrapper_around_nested_table_unwrapped() {
     // A 1x1 data table whose lone cell holds a nested table is layout
     // scaffolding (the Word-form shape): the wrapper unwraps so the inner
-    // grid renders as a real table instead of `a / b` runs.
+    // grid renders as a real table instead of one line per cell.
     let inner = table_from(
         vec![
             vec![
@@ -365,9 +365,10 @@ fn single_cell_wrapper_around_nested_table_unwrapped() {
 }
 
 #[test]
-fn nested_table_in_multi_cell_table_still_flattens() {
+fn nested_table_in_multi_cell_table_gives_one_line_per_cell() {
     // Only the single-cell wrapper unwraps; a nested table inside a real
-    // multi-cell grid keeps the flattened `a / b` form.
+    // multi-cell grid gives one line per non-empty cell, with no ` / `
+    // separator the document never had (firecrawl/anydoc#14).
     let inner = table_from(
         vec![vec![
             Cell::from_inlines(vec![Inline::plain("a")]),
@@ -379,7 +380,7 @@ fn nested_table_in_multi_cell_table_still_flattens() {
         vec![vec![Cell::new(vec![inner]), Cell::from_inlines(vec![Inline::plain("right")])]],
         0,
     )]);
-    assert_eq!(md, "|  |  |\n| --- | --- |\n| a / b | right |\n");
+    assert_eq!(md, "|  |  |\n| --- | --- |\n| a<br>b | right |\n");
 }
 
 #[test]

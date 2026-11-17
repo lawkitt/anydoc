@@ -18,7 +18,7 @@ After the binary blob: braces stay balanced.
 | Wide header |  |
 | --- | --- |
 | L | R |
-| outer second<br>nested A / nested B |  |
+| outer second<br>nested A<br>nested B |  |
 
 Да
 
