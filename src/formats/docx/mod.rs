@@ -277,6 +277,63 @@ mod tests {
     }
 
     #[test]
+    fn returning_to_an_overriding_instance_continues_its_count() {
+        // A startOverride applies once per instance: A(0) -> B(1) -> A(0)
+        // numbers the outer items 1, 2, not 1, 1 (Codex review of the #129
+        // port).
+        let document = r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+            <w:body>
+            <w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr></w:pPr><w:r><w:t>outer one</w:t></w:r></w:p>
+            <w:p><w:pPr><w:numPr><w:ilvl w:val="1"/><w:numId w:val="2"/></w:numPr></w:pPr><w:r><w:t>inner</w:t></w:r></w:p>
+            <w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr></w:pPr><w:r><w:t>outer two</w:t></w:r></w:p>
+            </w:body></w:document>"#;
+        let numbering = r#"<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+            <w:abstractNum w:abstractNumId="0">
+                <w:lvl w:ilvl="0"><w:numFmt w:val="decimal"/><w:start w:val="5"/><w:lvlText w:val="%1."/></w:lvl>
+                <w:lvl w:ilvl="1"><w:numFmt w:val="lowerLetter"/><w:start w:val="1"/><w:lvlText w:val="%2)"/></w:lvl>
+            </w:abstractNum>
+            <w:num w:numId="1"><w:abstractNumId w:val="0"/>
+                <w:lvlOverride w:ilvl="0"><w:startOverride w:val="1"/></w:lvlOverride>
+            </w:num>
+            <w:num w:numId="2"><w:abstractNumId w:val="0"/></w:num>
+            </w:numbering>"#;
+        let bytes =
+            docx_parts(&[("word/document.xml", document), ("word/numbering.xml", numbering)]);
+        let md = crate::to_markdown_bytes(&bytes, crate::Format::Docx).unwrap();
+        assert!(md.contains("1. outer one"), "{md}");
+        assert!(md.contains("2. outer two"), "{md}");
+        assert!(!md.contains("1. outer two"), "{md}");
+    }
+
+    #[test]
+    fn a_composite_label_reads_an_unused_ancestor_override() {
+        // A numbers level 0 from 3; B overrides level 0 to start at 10 and
+        // enters at level 1 with `%1.%2`. Its label reads B's override for
+        // the ancestor (10.1), as it did when counters were per numId, not
+        // A's running value (3.1).
+        let document = r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+            <w:body>
+            <w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr></w:pPr><w:r><w:t>outer</w:t></w:r></w:p>
+            <w:p><w:pPr><w:numPr><w:ilvl w:val="1"/><w:numId w:val="2"/></w:numPr></w:pPr><w:r><w:t>inner</w:t></w:r></w:p>
+            </w:body></w:document>"#;
+        let numbering = r#"<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+            <w:abstractNum w:abstractNumId="0">
+                <w:lvl w:ilvl="0"><w:numFmt w:val="decimal"/><w:start w:val="3"/><w:lvlText w:val="%1."/></w:lvl>
+                <w:lvl w:ilvl="1"><w:numFmt w:val="decimal"/><w:start w:val="1"/><w:lvlText w:val="%1.%2"/></w:lvl>
+            </w:abstractNum>
+            <w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num>
+            <w:num w:numId="2"><w:abstractNumId w:val="0"/>
+                <w:lvlOverride w:ilvl="0"><w:startOverride w:val="10"/></w:lvlOverride>
+            </w:num>
+            </w:numbering>"#;
+        let bytes =
+            docx_parts(&[("word/document.xml", document), ("word/numbering.xml", numbering)]);
+        let md = crate::to_markdown_bytes(&bytes, crate::Format::Docx).unwrap();
+        assert!(md.contains("10.1 inner"), "{md}");
+        assert!(!md.contains("3.1 inner"), "{md}");
+    }
+
+    #[test]
     fn override_restart_does_not_leak_into_the_next_instance() {
         // Entering an overriding instance schedules ITS levels' restarts; a
         // following plain instance of the same abstract must keep counting
