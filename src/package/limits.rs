@@ -43,7 +43,8 @@ pub const MAX_RECORD_DEPTH: usize = 64;
 /// Maximum formatting runs retained from one legacy `.doc` FKP stream. The
 /// page numbers in the PLC are attacker-controlled and may all alias a single
 /// page, so the entry count on its own does not bound how many runs they
-/// yield. Past the cap formatting degrades; text extraction is unaffected.
+/// yield. Past the cap the document fails with `ResourceLimit`: dropping the
+/// later runs would show deleted or hidden text as plain text.
 pub const MAX_DOC_RUNS: usize = 1_000_000;
 
 /// Maximum RTF group nesting depth. Real documents nest a few dozen groups;

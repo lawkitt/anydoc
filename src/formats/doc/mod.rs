@@ -75,8 +75,8 @@ pub fn parse(bytes: &[u8]) -> Result<Document, ConvertError> {
     let text = extract_text(&word_doc, &pieces, total_cp, encoding);
 
     let data = read_ole_stream(&mut ole, "Data").unwrap_or_default();
-    let chpx_runs = parse_fkps(&word_doc, &table, 0xFA, FkpKind::Chpx, &data);
-    let papx_runs = parse_fkps(&word_doc, &table, 0x102, FkpKind::Papx, &data);
+    let chpx_runs = parse_fkps(&word_doc, &table, 0xFA, FkpKind::Chpx, &data)?;
+    let papx_runs = parse_fkps(&word_doc, &table, 0x102, FkpKind::Papx, &data)?;
     let stylesheet = stsh::parse(&word_doc, &table);
     let list_tables = lists::parse(&word_doc, &table);
 
@@ -453,24 +453,28 @@ fn parse_fkps(
     fib_off: usize,
     kind: FkpKind,
     data: &[u8],
-) -> Vec<Run> {
+) -> Result<Vec<Run>, ConvertError> {
     let mut runs = Vec::new();
     let fc = get_u32(word_doc, fib_off).unwrap_or(0) as usize;
     let lcb = get_u32(word_doc, fib_off + 4).unwrap_or(0) as usize;
     let Some(plc) = table.get(fc..fc.saturating_add(lcb)) else {
-        return runs;
+        return Ok(runs);
     };
     if plc.len() < 8 {
-        return runs;
+        return Ok(runs);
     }
     let n = (plc.len() - 4) / 8;
     for i in 0..n {
         // Nothing stops every entry pointing at the same page, so `n` does
         // not bound the run count: without this a few megabytes of table
-        // stream expand into tens of gigabytes of `Run`.
+        // stream expand into tens of gigabytes of `Run`. Past the cap the
+        // document fails rather than losing formatting: a run past it could
+        // be deleted or hidden text, which must never show as plain text.
         if runs.len() >= limits::MAX_DOC_RUNS {
-            log::debug!("doc: formatting-run budget reached; later runs are ignored");
-            break;
+            return Err(ConvertError::ResourceLimit {
+                limit: "max_doc_runs",
+                detail: format!("more than {} formatting runs", limits::MAX_DOC_RUNS),
+            });
         }
         let Some(pn_raw) = get_u32(plc, (n + 1) * 4 + i * 4) else {
             continue;
@@ -484,7 +488,7 @@ fn parse_fkps(
         };
         parse_fkp_page(page, kind, data, &mut runs);
     }
-    runs
+    Ok(runs)
 }
 
 fn parse_fkp_page(page: &[u8], kind: FkpKind, data: &[u8], runs: &mut Vec<Run>) {
