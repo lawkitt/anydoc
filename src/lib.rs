@@ -41,6 +41,10 @@ pub enum Format {
     /// [`ConvertError::NeedsOcr`] naming them, or converts without them
     /// under [`Ocr::Skip`].
     ///
+    /// Needs the `pdf` cargo feature (on by default). Without it PDFs are
+    /// still detected, and converting one fails with
+    /// [`ConvertError::Unsupported`].
+    ///
     /// [pdf-inspector]: https://github.com/firecrawl/pdf-inspector
     Pdf,
     /// Binary PowerPoint 97-2003 (`.ppt`, `.pps`, `.pot`).
@@ -209,13 +213,29 @@ pub fn to_markdown_bytes_with(
     // through the document model, and are the only format with pages to
     // leave out.
     if format == Format::Pdf {
-        return formats::pdf::to_markdown(bytes, options.ocr);
+        return pdf_to_markdown(bytes, options.ocr);
     }
     let document = to_document(bytes, format)?;
     let markdown = document_to_markdown(&document);
     let images_left_out = document.source_images.unwrap_or_else(|| images_left_out(&document));
     Ok(Conversion { markdown, pages_needing_ocr: Vec::new(), page_count: 0, images_left_out })
 }
+
+#[cfg(feature = "pdf")]
+fn pdf_to_markdown(bytes: &[u8], ocr: Ocr) -> Result<Conversion, ConvertError> {
+    formats::pdf::to_markdown(bytes, ocr)
+}
+
+/// Without the `pdf` feature a PDF is still detected, but not converted.
+#[cfg(not(feature = "pdf"))]
+fn pdf_to_markdown(_bytes: &[u8], _ocr: Ocr) -> Result<Conversion, ConvertError> {
+    Err(ConvertError::Unsupported(PDF_NOT_BUILT.to_string()))
+}
+
+/// The [`ConvertError::Unsupported`] detail for a PDF when anydoc is built
+/// without its `pdf` feature.
+#[cfg(not(feature = "pdf"))]
+const PDF_NOT_BUILT: &str = "PDF conversion is not built in (anydoc's `pdf` feature is off)";
 
 /// [`Conversion::images_left_out`] from a parsed document's image inlines,
 /// for the frontends that do not count `Document::source_images`.

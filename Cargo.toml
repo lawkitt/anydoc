@@ -17,6 +17,12 @@ keywords = ["markdown", "docx", "pdf", "converter", "document"]
 categories = ["parser-implementations", "text-processing"]
 include = ["/src", "/examples/convert.rs", "/README.md", "/LICENSE"]
 
+[features]
+default = ["pdf"]
+# PDF conversion through pdf-inspector (and lopdf). Without it a PDF input
+# is detected as `Format::Pdf` but fails with `ConvertError::Unsupported`.
+pdf = ["dep:pdf-inspector"]
+
 [dev-dependencies]
 insta = "1"
 sha2 = "0.11"
@@ -27,7 +33,8 @@ csv = "1.4.0"
 flate2 = "1"
 encoding_rs = "0.8.35"
 log = "0.4"
-pdf-inspector = "1.14.2"
+# PDF conversion; the `pdf` feature. lopdf comes in through it.
+pdf-inspector = { version = "1.14.2", optional = true }
 quick-xml = "0.41.0"
 zip = { version = "9.5.1", default-features = false, features = ["deflate"] }
 
