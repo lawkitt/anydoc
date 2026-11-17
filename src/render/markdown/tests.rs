@@ -10,6 +10,7 @@ fn doc(blocks: Vec<Block>) -> String {
         notes: Vec::new(),
         assets: Vec::new(),
         source_images: None,
+        hidden_text_left_out: 0,
     })
 }
 
@@ -639,6 +640,7 @@ fn footnotes() {
         ],
         assets: Vec::new(),
         source_images: None,
+        hidden_text_left_out: 0,
     });
     assert_eq!(
         md,
@@ -659,6 +661,7 @@ fn empty_and_unreferenced_notes() {
         ],
         assets: Vec::new(),
         source_images: None,
+        hidden_text_left_out: 0,
     });
     assert_eq!(md, "Text\n\n[^1]: Kept.\n");
 }
@@ -673,6 +676,7 @@ fn duplicate_note_ids_render_one_definition() {
         ],
         assets: Vec::new(),
         source_images: None,
+        hidden_text_left_out: 0,
     });
     assert_eq!(md, "Text[^1]\n\n[^1]: First wins.\n");
 }
@@ -687,6 +691,7 @@ fn blank_duplicate_note_does_not_suppress_a_later_definition() {
         ],
         assets: Vec::new(),
         source_images: None,
+        hidden_text_left_out: 0,
     });
     assert_eq!(md, "Text[^1]\n\n[^1]: Usable.\n");
 }

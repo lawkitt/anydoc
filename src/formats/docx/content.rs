@@ -13,6 +13,7 @@ use crate::shared::blockstyle::{BlockStyle, StyledRun};
 use crate::shared::delta::rebase_emphasis;
 use crate::shared::fields::{FieldFrame, field_result};
 use crate::shared::header::resolve_header_rows;
+use crate::shared::hidden::HiddenText;
 use crate::shared::list::{ListEntry, ListKey, flush_list};
 use crate::shared::math::{omath_para_to_tex, omath_to_tex};
 use crate::shared::text::clean_text;
@@ -47,6 +48,8 @@ pub(super) struct Ctx<'a, 'b> {
     pub assets: &'b RefCell<AssetSink>,
     /// Pictures met so far (`Document::source_images`).
     pub images: &'b std::cell::Cell<u32>,
+    /// Hidden text left out so far (`Document::hidden_text_left_out`).
+    pub hidden: &'b RefCell<HiddenText>,
 }
 
 impl<'a, 'b> Ctx<'a, 'b> {
@@ -62,6 +65,7 @@ impl<'a, 'b> Ctx<'a, 'b> {
             counters: self.counters,
             assets: self.assets,
             images: self.images,
+            hidden: self.hidden,
         }
     }
 
@@ -265,6 +269,8 @@ fn parse_paragraph(p: &Element, ctx: &Ctx) -> Result<(ParaKind, Vec<Piece>), Con
         None => Default::default(),
     };
     let paragraph_level = parity.apply_over(ctx.styles.doc_defaults);
+    // `w:vanish` is a toggle property too, over the docDefaults base.
+    let paragraph_hidden = ctx.styles.doc_defaults_hidden ^ parity.vanish;
 
     let kind = match heading {
         Some(level) => {
@@ -285,7 +291,9 @@ fn parse_paragraph(p: &Element, ctx: &Ctx) -> Result<(ParaKind, Vec<Piece>), Con
         },
     };
 
-    let mut walker = InlineWalker::new(ctx, paragraph_level);
+    // Hidden text never runs on across a paragraph boundary.
+    ctx.hidden.borrow_mut().visible();
+    let mut walker = InlineWalker::new(ctx, paragraph_level, paragraph_hidden);
     walker.walk(p)?;
     Ok((kind, walker.finish()))
 }
@@ -352,14 +360,23 @@ fn resolve_numbering(
 struct InlineWalker<'a, 'b, 'e> {
     ctx: &'e Ctx<'a, 'b>,
     base: Style,
+    /// Whether the paragraph's style chain hides its runs (`w:vanish`).
+    base_hidden: bool,
     pieces: Vec<Piece>,
     current: Vec<Inline>,
     fields: Vec<FieldFrame>,
 }
 
 impl<'a, 'b, 'e> InlineWalker<'a, 'b, 'e> {
-    fn new(ctx: &'e Ctx<'a, 'b>, base: Style) -> Self {
-        InlineWalker { ctx, base, pieces: Vec::new(), current: Vec::new(), fields: Vec::new() }
+    fn new(ctx: &'e Ctx<'a, 'b>, base: Style, base_hidden: bool) -> Self {
+        InlineWalker {
+            ctx,
+            base,
+            base_hidden,
+            pieces: Vec::new(),
+            current: Vec::new(),
+            fields: Vec::new(),
+        }
     }
 
     fn push(&mut self, inline: Inline) {
@@ -409,7 +426,7 @@ impl<'a, 'b, 'e> InlineWalker<'a, 'b, 'e> {
                 "r" => self.walk_run(child)?,
                 "hyperlink" => {
                     let target = self.hyperlink_link_target(child);
-                    let mut inner = InlineWalker::new(self.ctx, self.base);
+                    let mut inner = InlineWalker::new(self.ctx, self.base, self.base_hidden);
                     inner.walk(child)?;
                     let (content, attachments) = split_pieces(inner.finish());
                     if let Some(target) = target {
@@ -425,7 +442,7 @@ impl<'a, 'b, 'e> InlineWalker<'a, 'b, 'e> {
                 }
                 "fldSimple" => {
                     let instr = child.attr(ns::W, "instr").unwrap_or("").to_string();
-                    let mut inner = InlineWalker::new(self.ctx, self.base);
+                    let mut inner = InlineWalker::new(self.ctx, self.base, self.base_hidden);
                     inner.walk(child)?;
                     let (content, attachments) = split_pieces(inner.finish());
                     self.push_field_result(&instr, content);
@@ -465,7 +482,7 @@ impl<'a, 'b, 'e> InlineWalker<'a, 'b, 'e> {
     }
 
     fn walk_run(&mut self, run: &Element) -> Result<(), ConvertError> {
-        let style = match run.find(ns::W, "rPr") {
+        let (style, hidden) = match run.find(ns::W, "rPr") {
             Some(rpr) => {
                 // Character-style chain: another toggle layer over the
                 // paragraph-level value. Direct formatting is absolute.
@@ -475,18 +492,37 @@ impl<'a, 'b, 'e> InlineWalker<'a, 'b, 'e> {
                     None => Default::default(),
                 };
                 let with_char = char_parity.apply_over(self.base);
-                rpr_delta(rpr).apply(with_char)
+                let hidden = on_off(rpr, "vanish").unwrap_or(self.base_hidden ^ char_parity.vanish);
+                (rpr_delta(rpr).apply(with_char), hidden)
             }
-            None => self.base,
+            None => (self.base, self.base_hidden),
         };
-        self.walk_run_content(run, style)
+        self.walk_run_content(run, style, hidden)
     }
 
-    fn walk_run_content(&mut self, run: &Element, style: Style) -> Result<(), ConvertError> {
+    /// Run text, or for a hidden run (`w:vanish`) nothing: hidden text is
+    /// left out of the model and counted (`Document::hidden_text_left_out`).
+    fn push_text(&mut self, text: String, style: Style, hidden: bool) {
+        if hidden {
+            self.ctx.hidden.borrow_mut().left_out(&text);
+            return;
+        }
+        self.ctx.hidden.borrow_mut().visible();
+        self.push(Inline::Text { text, style });
+    }
+
+    /// A hidden run's text and line breaks are left out; its drawings, note
+    /// references and field structure are kept.
+    fn walk_run_content(
+        &mut self,
+        run: &Element,
+        style: Style,
+        hidden: bool,
+    ) -> Result<(), ConvertError> {
         for child in run.child_elems() {
             if child.is(ns::MC, "AlternateContent") {
                 if let Some(branch) = self.ctx.alternate_branch(child) {
-                    self.walk_run_content(branch, style)?;
+                    self.walk_run_content(branch, style, hidden)?;
                 }
                 continue;
             }
@@ -501,24 +537,23 @@ impl<'a, 'b, 'e> InlineWalker<'a, 'b, 'e> {
                     // whitespace to the application, so it is kept.
                     let text = clean_text(child.text().as_ref());
                     if !text.is_empty() {
-                        self.push(Inline::Text { text, style });
+                        self.push_text(text, style, hidden);
                     }
                 }
                 "sym" => {
                     if let Some(glyph) = super::symbols::checkbox(child) {
-                        self.push(Inline::Text { text: glyph.to_string(), style });
+                        self.push_text(glyph.to_string(), style, hidden);
                     }
                 }
-                "tab" | "ptab" => self.push(Inline::Text { text: " ".into(), style: Style::PLAIN }),
+                "tab" | "ptab" => self.push_text(" ".into(), Style::PLAIN, hidden),
                 // A non-breaking hyphen is a visible hyphen, the one the
                 // binary and RTF readers emit for the same character.
-                "noBreakHyphen" => self.push(Inline::Text { text: "-".into(), style }),
+                "noBreakHyphen" => self.push_text("-".into(), style, hidden),
                 // Markdown has no pages or columns, but every w:br still
                 // separates the runs around it: dropping a page break
                 // outright would join the words on either side. One left at
                 // the end of a paragraph is trimmed when the block renders.
-                "br" => self.push(Inline::LineBreak),
-                "cr" => self.push(Inline::LineBreak),
+                "br" | "cr" if !hidden => self.push(Inline::LineBreak),
                 "footnoteReference" => {
                     if let Some(id) = child.attr(ns::W, "id") {
                         self.push(Inline::NoteRef(format!("fn{id}")));

@@ -48,6 +48,7 @@ pub fn to_markdown(bytes: &[u8], ocr: Ocr) -> Result<Conversion, ConvertError> {
                 pages_needing_ocr: Vec::new(),
                 page_count: result.page_count,
                 images_left_out: 0,
+                hidden_text_left_out: 0,
             })
         }
         _ => Err(ConvertError::Unsupported(format!(
@@ -104,7 +105,13 @@ fn skip_pages_needing_ocr(
         (page_count as usize).saturating_sub(pages_needing_ocr.len()),
         page_ranges(&pages_needing_ocr)
     );
-    Ok(Conversion { markdown, pages_needing_ocr, page_count, images_left_out: 0 })
+    Ok(Conversion {
+        markdown,
+        pages_needing_ocr,
+        page_count,
+        images_left_out: 0,
+        hidden_text_left_out: 0,
+    })
 }
 
 fn map_error(e: PdfError) -> ConvertError {

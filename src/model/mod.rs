@@ -41,6 +41,13 @@ pub struct Document {
     /// bytes and no alt text, or one in preformatted text (which holds text
     /// only), still counts. `None` from the other frontends.
     pub source_images: Option<u32>,
+    /// Stretches of hidden-formatted text the frontend left out: DOCX
+    /// `w:vanish`, RTF `\v` and binary DOC `fVanish` text never reaches the
+    /// blocks. A stretch is hidden text running on, within one paragraph,
+    /// with no visible text in between, counted once however many runs it
+    /// spans; hidden whitespace alone is not counted. 0 from the formats
+    /// that have no hidden text.
+    pub hidden_text_left_out: u32,
 }
 
 /// Footnote or endnote body, referenced from text by [`Inline::NoteRef`].

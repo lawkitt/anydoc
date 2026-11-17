@@ -167,6 +167,16 @@ pub struct Conversion {
     /// the image inlines their document holds. Always 0 for PDFs, which
     /// convert without the document model.
     pub images_left_out: u32,
+    /// Stretches of hidden-formatted text left out of the Markdown: Word's
+    /// hidden character property, from DOCX (`w:vanish`, through styles too,
+    /// and off again with `w:val="0"`), RTF (`\v`) and binary DOC
+    /// (`sprmCFVanish`). A stretch is hidden text running on, within one
+    /// paragraph, with no visible text in between: it counts once however
+    /// many runs it spans, and hidden whitespace alone does not count. Hidden
+    /// runs keep their pictures, note references and paragraph breaks; only
+    /// their text and line breaks are left out. Always 0 for the other
+    /// formats, PDFs included.
+    pub hidden_text_left_out: u32,
 }
 
 /// Convert a document file to Markdown. The format is detected from the
@@ -218,7 +228,13 @@ pub fn to_markdown_bytes_with(
     let document = to_document(bytes, format)?;
     let markdown = document_to_markdown(&document);
     let images_left_out = document.source_images.unwrap_or_else(|| images_left_out(&document));
-    Ok(Conversion { markdown, pages_needing_ocr: Vec::new(), page_count: 0, images_left_out })
+    Ok(Conversion {
+        markdown,
+        pages_needing_ocr: Vec::new(),
+        page_count: 0,
+        images_left_out,
+        hidden_text_left_out: document.hidden_text_left_out,
+    })
 }
 
 #[cfg(feature = "pdf")]
@@ -338,6 +354,7 @@ mod images_left_out_tests {
             }],
             assets: Vec::new(),
             source_images: None,
+            hidden_text_left_out: 0,
         };
         assert_eq!(images_left_out(&document), 6);
         assert_eq!(images_left_out(&Document::default()), 0);

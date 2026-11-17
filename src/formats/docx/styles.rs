@@ -1,6 +1,6 @@
 //! WordprocessingML style table.
 //!
-//! Bold/italic/strike are *toggle properties* (ECMA-376 §17.7.3): within the
+//! Bold/italic/strike and hidden text (`vanish`) are *toggle properties* (ECMA-376 §17.7.3): within the
 //! style hierarchy a `true` specification toggles the inherited value and a
 //! `false` specification leaves it unchanged, so the style layers contribute
 //! a true-count *parity* XORed over the `docDefaults` base. Direct run
@@ -19,6 +19,9 @@ pub struct Toggles {
     pub bold: bool,
     pub italic: bool,
     pub strike: bool,
+    /// Hidden text (`w:vanish`), also a toggle property. It is not a
+    /// [`Style`]: hidden runs never reach the model.
+    pub vanish: bool,
 }
 
 impl Toggles {
@@ -27,6 +30,7 @@ impl Toggles {
             bold: self.bold ^ other.bold,
             italic: self.italic ^ other.italic,
             strike: self.strike ^ other.strike,
+            vanish: self.vanish ^ other.vanish,
         }
     }
 
@@ -44,13 +48,20 @@ pub struct Styles<'a> {
     chains: StyleChains<'a, Element>,
     /// docDefaults as absolute values (the base the toggles flip over).
     pub doc_defaults: Style,
+    /// Whether docDefaults hide text (`w:vanish`), the base the style
+    /// chains' vanish toggles flip over.
+    pub doc_defaults_hidden: bool,
 }
 
 impl<'a> Styles<'a> {
     pub fn parse_opt(root: Option<&'a Element>) -> Styles<'a> {
         match root {
             Some(root) => Styles::parse(root),
-            None => Styles { chains: StyleChains::default(), doc_defaults: Style::PLAIN },
+            None => Styles {
+                chains: StyleChains::default(),
+                doc_defaults: Style::PLAIN,
+                doc_defaults_hidden: false,
+            },
         }
     }
 
@@ -62,13 +73,13 @@ impl<'a> Styles<'a> {
                 chains.insert(id, style, parent);
             }
         }
-        let doc_defaults = root
+        let default_rpr = root
             .find(ns::W, "docDefaults")
             .and_then(|d| d.find(ns::W, "rPrDefault"))
-            .and_then(|d| d.find(ns::W, "rPr"))
-            .map(|rpr| rpr_delta(rpr).resolve())
-            .unwrap_or(Style::PLAIN);
-        Styles { chains, doc_defaults }
+            .and_then(|d| d.find(ns::W, "rPr"));
+        let doc_defaults = default_rpr.map(|rpr| rpr_delta(rpr).resolve()).unwrap_or(Style::PLAIN);
+        let doc_defaults_hidden = default_rpr.and_then(|rpr| on_off(rpr, "vanish")) == Some(true);
+        Styles { chains, doc_defaults, doc_defaults_hidden }
     }
 
     /// The parity of `true` toggle specifications along a style's `basedOn`
@@ -82,6 +93,7 @@ impl<'a> Styles<'a> {
                     italic: on_off(rpr, "i") == Some(true),
                     strike: on_off(rpr, "strike") == Some(true)
                         || on_off(rpr, "dstrike") == Some(true),
+                    vanish: on_off(rpr, "vanish") == Some(true),
                 });
             }
             None

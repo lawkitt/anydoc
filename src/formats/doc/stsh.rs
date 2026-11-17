@@ -14,6 +14,8 @@ const ISTD_NIL: u16 = 0x0FFF;
 pub struct ResolvedStyle {
     /// Effective character formatting of the chain.
     pub chp: Style,
+    /// Whether the chain hides text (`sprmCFVanish`).
+    pub hidden: bool,
     /// Effective paragraph properties of the chain.
     pub pap: PapDelta,
     /// Heading level for built-in `heading N` styles.
@@ -187,7 +189,7 @@ fn resolve(
             apply_pap_sprms(&std.upx_papx[2..], &[], &mut delta);
             base.pap = base.pap.merge(delta);
         }
-        base.chp = apply_style_chpx(&std.upx_chpx, base.chp);
+        (base.chp, base.hidden) = apply_style_chpx(&std.upx_chpx, base.chp, base.hidden);
         if let sti @ 1..=9 = std.sti {
             base.heading = Some(sti as u8);
         }

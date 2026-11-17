@@ -59,6 +59,7 @@ pub fn parse(bytes: &[u8]) -> Result<Document, ConvertError> {
     let counters = RefCell::new(Counters::default());
     let assets = RefCell::new(AssetSink::new());
     let images = Cell::new(0);
+    let hidden = RefCell::new(crate::shared::hidden::HiddenText::default());
 
     let footnotes_part =
         typed_part_path(&doc_rels, &main_part, rel_type::FOOTNOTES, "footnotes.xml");
@@ -73,6 +74,7 @@ pub fn parse(bytes: &[u8]) -> Result<Document, ConvertError> {
         counters: &counters,
         assets: &assets,
         images: &images,
+        hidden: &hidden,
     };
     let blocks = content::parse_blocks(body, &ctx)?;
 
@@ -106,7 +108,8 @@ pub fn parse(bytes: &[u8]) -> Result<Document, ConvertError> {
     }
 
     let assets = std::mem::take(&mut assets.borrow_mut().assets);
-    Ok(Document { blocks, notes, assets, source_images: Some(images.get()) })
+    let hidden_text_left_out = hidden.borrow().count();
+    Ok(Document { blocks, notes, assets, source_images: Some(images.get()), hidden_text_left_out })
 }
 
 /// Path of a typed related part, resolved against the main part; falls back
