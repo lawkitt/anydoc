@@ -6,7 +6,7 @@ use crate::error::ConvertError;
 use crate::package::xml::{Element, ns};
 use crate::shared::list::MarkerKind;
 use crate::shared::numbering::{NumberPattern, composite_label, parse_percent_pattern};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 pub const LEVELS: usize = 9;
 
@@ -272,6 +272,10 @@ struct InstanceState {
     /// following plain instance cannot consume a restart that was never
     /// earned (cubic review of #129).
     fresh_overrides: [bool; LEVELS],
+    /// The (numId, level) overrides already applied. A startOverride applies
+    /// once per instance: returning to an instance after another one drove
+    /// the list continues its count instead of restarting it again.
+    consumed: HashSet<(u64, usize)>,
 }
 
 impl Counters {
@@ -284,10 +288,18 @@ impl Counters {
         if state.last_num != Some(num_id) {
             // First paragraph of this list, or an instance switch within it.
             state.fresh_overrides = instance.overrides;
+            for (level, fresh) in state.fresh_overrides.iter_mut().enumerate() {
+                if state.consumed.contains(&(num_id, level)) {
+                    *fresh = false;
+                }
+            }
             state.last_num = Some(num_id);
         }
         let def = &instance.levels[ilvl];
         let override_restart = std::mem::take(&mut state.fresh_overrides[ilvl]);
+        if override_restart {
+            state.consumed.insert((num_id, ilvl));
+        }
         if !state.initialized[ilvl] || state.restart_pending[ilvl] || override_restart {
             state.value[ilvl] = def.start;
             state.initialized[ilvl] = true;
@@ -316,7 +328,13 @@ impl Counters {
                 |l| instance.levels[l.min(LEVELS - 1)].marker.unwrap_or(MarkerKind::Decimal),
                 |l| {
                     let l = l.min(LEVELS - 1);
-                    if state.initialized[l] && !state.restart_pending[l] {
+                    // An ancestor this instance overrides but hasn't used yet
+                    // reads as the override's start, without restarting the
+                    // shared counter for the other instances.
+                    if state.initialized[l]
+                        && !state.restart_pending[l]
+                        && !state.fresh_overrides[l]
+                    {
                         state.value[l]
                     } else {
                         instance.levels[l].start
