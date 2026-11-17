@@ -1,0 +1,7 @@
+# Exact toolchain for development and fork CI (docs/fork-ci.md), the same
+# version mdoc builds with. Bump by hand, then fix any new clippy lints in the
+# same commit. It does not affect crates that depend on AnyDoc.
+[toolchain]
+channel = "1.99.0"
+components = ["clippy", "rustfmt"]
+profile = "minimal"

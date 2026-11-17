@@ -1,53 +1,124 @@
+# lawkitt fork CI. Replaces upstream's ci.yml (Blacksmith runners and actions
+# this repository's Actions policy does not allow). Decisions, and what to do
+# when an upstream sync conflicts here: docs/fork-ci.md.
 name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [master]
   pull_request:
+    branches: [master]
   workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  # CI does not need test debug symbols; this trims link time and cache size.
+  CARGO_PROFILE_TEST_DEBUG: 0
+
+# Superseded PR revisions give no useful signal.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
 
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
-  rust:
-    name: Rust
-    runs-on: blacksmith-8vcpu-ubuntu-2404
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+          persist-credentials: false
+
+      # rustup is on every hosted runner; it installs the toolchain and
+      # components pinned in rust-toolchain.toml.
+      - name: Install Rust
+        shell: bash
+        run: rustup set profile minimal && rustup toolchain install
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          key: lint
+
+      - name: Check version sync
+        run: sh scripts/check-versions.sh
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Run clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  # mdoc builds AnyDoc on macOS, Windows, iOS and Android, without the `pdf`
+  # feature once it exists; both feature sets run on every desktop OS.
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        shell: bash
+        run: rustup set profile minimal && rustup toolchain install
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          key: test
+
       # Root package only: the node/ and python/ binding crates are cdylib-only
       # and their test harnesses cannot link outside a Node/Python host; they
-      # are covered by the node and python jobs instead.
-      - run: cargo test --locked
+      # are covered by the binding jobs instead.
+      - name: Run tests
+        run: cargo test --locked
+
+      - name: Run tests without default features
+        run: cargo test --locked --no-default-features
 
   node:
     name: Node bindings
-    runs-on: blacksmith-8vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        shell: bash
+        run: rustup set profile minimal && rustup toolchain install
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          key: node
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 26
           cache: npm
           cache-dependency-path: node/package-lock.json
+
       - run: npm ci
         working-directory: node
+
       - run: npm run build
         working-directory: node
+
       - run: npm test
         working-directory: node
+
       - name: Committed bindings are up to date
         # `npm run build` regenerates index.js / index.d.ts; any diff means the
         # committed generated bindings are stale and must be rebuilt and committed.
@@ -59,40 +130,68 @@ jobs:
 
   wasm:
     name: Wasm bindings
-    runs-on: blacksmith-8vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          targets: wasm32-unknown-unknown
-          components: clippy
-      - uses: Swatinem/rust-cache@v2
+          persist-credentials: false
+
+      - name: Install Rust
+        shell: bash
+        run: |
+          rustup set profile minimal
+          rustup toolchain install
+          rustup target add wasm32-unknown-unknown
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           key: wasm32-unknown-unknown
+
       - run: cargo clippy -p anydoc-wasm --target wasm32-unknown-unknown -- -D warnings
-      - uses: actions/setup-node@v7
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 26
+
       - name: Install wasm-pack
         run: >
           curl -sSfL https://github.com/wasm-bindgen/wasm-pack/releases/download/v0.15.0/wasm-pack-v0.15.0-x86_64-unknown-linux-musl.tar.gz
           | tar xz --strip-components=1 -C /usr/local/bin wasm-pack-v0.15.0-x86_64-unknown-linux-musl/wasm-pack
+
       - run: wasm-pack build wasm --release --target web --scope firecrawl
+
       - run: node --test wasm/test.mjs
 
   python:
     name: Python bindings
-    runs-on: blacksmith-8vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        shell: bash
+        run: rustup set profile minimal && rustup toolchain install
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          key: python
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.13'
+
       - run: pip install maturin
+
       - run: maturin build --release --locked --manifest-path python/Cargo.toml --out dist
+
       - run: pip install --no-index --find-links dist firecrawl-anydoc
+
       # Must run from the repo root: with python/ as cwd, the source anydoc/
       # package dir shadows the installed compiled module.
       - run: python -m unittest discover -s python/tests
