@@ -304,16 +304,21 @@ impl MathState {
         MathState { depth, open: vec![(depth, math_elem("zone"))], has_visible_text: false }
     }
 
-    /// Open a nested group. Past [`limits::MAX_XML_DEPTH`] the group is
-    /// dropped and its content stays in the nearest open ancestor: this tree
-    /// is hand-built rather than produced by `parse_xml`, so nothing else
-    /// applies that bound, and the OMML serializer that consumes it recurses
-    /// once per level — as does dropping the tree.
-    fn open_group(&mut self, depth: usize) {
+    /// Open a nested group. Past [`limits::MAX_XML_DEPTH`] the document fails
+    /// with `ResourceLimit`, as a parsed XML tree that deep does: this tree is
+    /// hand-built rather than produced by `parse_xml`, so nothing else applies
+    /// that bound, and the OMML serializer that consumes it recurses once per
+    /// level, as does dropping the tree. Flattening the excess instead would
+    /// silently lose the equation's innermost text.
+    fn open_group(&mut self, depth: usize) -> Result<(), ConvertError> {
         if self.open.len() >= limits::MAX_XML_DEPTH {
-            return;
+            return Err(ConvertError::ResourceLimit {
+                limit: "max_xml_depth",
+                detail: format!("math nesting exceeds {}", limits::MAX_XML_DEPTH),
+            });
         }
         self.open.push((depth, math_elem("")));
+        Ok(())
     }
 
     /// Attach the groups opened deeper than `depth` to their parents. A
@@ -687,7 +692,7 @@ impl<'a> Parser<'a> {
                     if self.state.capture == Capture::Math
                         && let Some(math) = &mut self.dest.math
                     {
-                        math.open_group(self.stack.len());
+                        math.open_group(self.stack.len())?;
                     }
                 }
                 Token::Close => {
@@ -1420,7 +1425,7 @@ mod tests {
     /// here — the OMML serializer recurses once per level, and so does
     /// dropping the tree.
     #[test]
-    fn deep_math_nesting_stays_within_the_xml_depth_bound() {
+    fn deep_math_nesting_hits_the_xml_depth_bound() {
         // An active zone (`\mmath` without `\*`, which would suppress it)
         // whose groups each name an element (`\me`), so every level nests.
         fn nested(groups: usize) -> String {
@@ -1431,18 +1436,20 @@ mod tests {
             src.push_str(r"}}\par}");
             src
         }
-        let markdown = |src: String| {
-            let doc = parse(src.as_bytes()).expect("bounded math converts");
-            crate::render::markdown::document_to_markdown(&doc)
-        };
-        // Under the cap the whole tree serializes.
-        assert_eq!(markdown(nested(limits::MAX_XML_DEPTH / 2)).trim(), "$x$");
-        // Twice the cap, still under the group bound so this exercises the
-        // math cap alone: it terminates without overflowing the stack. The
-        // run past the cap is not kept.
-        let groups = limits::MAX_XML_DEPTH * 2;
-        assert!(groups + 8 < limits::MAX_RTF_GROUP_DEPTH);
-        markdown(nested(groups));
+        // The zone, `\moMath` and `\mr` take three levels: the deepest
+        // equation under the cap serializes whole.
+        let doc = parse(nested(limits::MAX_XML_DEPTH - 3).as_bytes()).expect("under the cap");
+        assert_eq!(crate::render::markdown::document_to_markdown(&doc).trim(), "$x$");
+        // One level more fails rather than losing the innermost text. Still
+        // under the group bound, so this is the math cap alone.
+        const { assert!(limits::MAX_XML_DEPTH + 8 < limits::MAX_RTF_GROUP_DEPTH) };
+        for groups in [limits::MAX_XML_DEPTH - 2, limits::MAX_XML_DEPTH * 2] {
+            let err = parse(nested(groups).as_bytes()).unwrap_err();
+            assert!(
+                matches!(&err, ConvertError::ResourceLimit { limit: "max_xml_depth", .. }),
+                "{groups}: expected max_xml_depth, got {err:?}"
+            );
+        }
     }
 
     #[test]
