@@ -1093,8 +1093,9 @@ impl<'a> Parser<'a> {
         let Some(math) = self.dest.math.take() else {
             return;
         };
-        // Runs after the group closes: the state is the enclosing one.
-        if self.state.deleted {
+        // Runs after the group closes: the state is the enclosing one. A
+        // hidden zone's runs were already left out and counted.
+        if self.state.deleted || self.state.hidden {
             return;
         }
         let (lines, display) = math.finish();
@@ -1198,8 +1199,11 @@ impl<'a> Parser<'a> {
             Capture::Bookmark => self.dest.bookmark.push_str(&text),
             // Picture payload bytes are collected raw in the token loop.
             Capture::Pict => {}
+            // A hidden math run (`\v`) is left out and counted like text.
+            Capture::Math if self.state.hidden => self.hidden.left_out(&text),
             Capture::Math => {
                 if let Some(math) = &mut self.dest.math {
+                    self.hidden.visible();
                     math.push_text(text);
                 }
             }

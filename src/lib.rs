@@ -173,9 +173,10 @@ pub struct Conversion {
     /// (`sprmCFVanish`). A stretch is hidden text running on, within one
     /// paragraph, with no visible text in between: it counts once however
     /// many runs it spans, and hidden whitespace alone does not count. Hidden
-    /// runs keep their pictures, note references and paragraph breaks; only
-    /// their text and line breaks are left out. Always 0 for the other
-    /// formats, PDFs included.
+    /// runs keep their pictures, note references, field instructions and
+    /// paragraph breaks; their text, equation runs and line breaks are left
+    /// out, and so is a hyperlink whose whole label is hidden. Always 0 for
+    /// the other formats, PDFs included.
     pub hidden_text_left_out: u32,
 }
 

@@ -67,7 +67,7 @@ fn docx(body: &str, styles: &str, footnotes: &str) -> Vec<u8> {
         (
             "word/document.xml",
             format!(
-                r#"<w:document xmlns:w="{W}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body>{body}</w:body></w:document>"#
+                r#"<w:document xmlns:w="{W}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><w:body>{body}</w:body></w:document>"#
             ),
         ),
         ("word/styles.xml", format!(r#"<w:styles xmlns:w="{W}">{styles}</w:styles>"#)),
@@ -258,4 +258,89 @@ fn doc_hidden_text_is_left_out_and_counted() {
         assert_eq!(converted.markdown.trim(), expected, "{runs:?}");
         assert_eq!(converted.hidden_text_left_out, stretches, "{runs:?}");
     }
+}
+
+/// A hyperlink whose whole label is hidden is hidden too: with an empty
+/// label the renderer would show its URL.
+#[test]
+fn docx_a_wholly_hidden_hyperlink_leaves_no_url() {
+    let body = format!(
+        r#"<w:p>{}<w:hyperlink r:id="rId3">{}</w:hyperlink>{}</w:p>"#,
+        run("Before ", ""),
+        run("SECRET", "<w:vanish/>"),
+        run("after.", ""),
+    );
+    let converted = convert(&docx(&body, "", ""), Format::Docx);
+    assert_eq!(converted.markdown.trim(), "Before after.");
+    assert_eq!(converted.hidden_text_left_out, 1);
+}
+
+/// Math runs take `w:vanish` like text runs.
+#[test]
+fn docx_hidden_math_runs_are_left_out() {
+    let math_run =
+        |text: &str, rpr: &str| format!(r#"<m:r><w:rPr>{rpr}</w:rPr><m:t>{text}</m:t></m:r>"#);
+    let body = format!(
+        concat!(
+            "<w:p>{}<m:oMath>{}</m:oMath>{}</w:p>",
+            "<w:p>{}<m:oMath>{}{}</m:oMath></w:p>",
+            "<w:p><m:oMathPara><m:oMath>{}</m:oMath></m:oMathPara></w:p>",
+        ),
+        run("Hidden ", ""),
+        math_run("y", "<w:vanish/>"),
+        run("equation.", ""),
+        run("Mixed ", ""),
+        math_run("x", ""),
+        math_run("z", "<w:vanish/>"),
+        math_run("w", "<w:vanish/>"),
+    );
+    let converted = convert(&docx(&body, "", ""), Format::Docx);
+    assert_eq!(converted.markdown.trim(), "Hidden equation.\n\nMixed $x$");
+    assert_eq!(converted.hidden_text_left_out, 3);
+}
+
+/// A paragraph that names no style takes the default paragraph style,
+/// which can hide its runs.
+#[test]
+fn docx_the_default_paragraph_style_can_hide_text() {
+    let styles = concat!(
+        r#"<w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:rPr><w:vanish/></w:rPr></w:style>"#,
+        r#"<w:style w:type="paragraph" w:styleId="Shown"><w:name w:val="Shown"/></w:style>"#,
+    );
+    let body = format!(
+        r#"<w:p>{}</w:p><w:p><w:pPr><w:pStyle w:val="Shown"/></w:pPr>{}</w:p>"#,
+        run("SECRET", ""),
+        run("Shown.", ""),
+    );
+    let converted = convert(&docx(&body, styles, ""), Format::Docx);
+    assert_eq!(converted.markdown.trim(), "Shown.");
+    assert_eq!(converted.hidden_text_left_out, 1);
+}
+
+#[test]
+fn rtf_hidden_math_runs_are_left_out() {
+    for (src, expected, stretches) in [
+        (r"{\rtf1 Hidden {\v{\mmath{\*\moMath{\mr y}}}}equation.\par}", "Hidden equation.", 1),
+        (r"{\rtf1 Mixed {\mmath{\*\moMath{\mr x}{\mr\v z}}}\par}", "Mixed $x$", 1),
+    ] {
+        let converted = convert(src.as_bytes(), Format::Rtf);
+        assert_eq!(converted.markdown.trim(), expected, "{src}");
+        assert_eq!(converted.hidden_text_left_out, stretches, "{src}");
+    }
+}
+
+/// A hidden field instruction is still read, so a visible result keeps its
+/// link: instructions are never displayed.
+#[test]
+fn doc_a_hidden_field_instruction_keeps_its_visible_link() {
+    let runs = vec![
+        ("\u{13}", &[][..], 0),
+        (" HYPERLINK \"https://example.com/\" ", &VANISH[..], 0),
+        ("\u{14}", &[][..], 0),
+        ("Example", &[][..], 0),
+        ("\u{15}\r", &[][..], 0),
+    ];
+    let converted = convert(&doc(&runs), Format::Doc);
+    assert_eq!(converted.markdown.trim(), "[Example](https://example.com/)");
+    assert_eq!(converted.hidden_text_left_out, 0);
 }

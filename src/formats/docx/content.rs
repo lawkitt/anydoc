@@ -8,7 +8,7 @@ use crate::model::{
 };
 use crate::package::Package;
 use crate::package::relationships::{RelTarget, Relationships, TargetMode, rel_target_bytes};
-use crate::package::xml::{Element, ns};
+use crate::package::xml::{Element, Node, ns};
 use crate::shared::blockstyle::{BlockStyle, StyledRun};
 use crate::shared::delta::rebase_emphasis;
 use crate::shared::fields::{FieldFrame, field_result};
@@ -239,7 +239,11 @@ fn emit_paragraph(kind: ParaKind, pieces: Vec<Piece>, blocks: &mut Vec<Block>, r
 
 fn parse_paragraph(p: &Element, ctx: &Ctx) -> Result<(ParaKind, Vec<Piece>), ConvertError> {
     let ppr = p.find(ns::W, "pPr");
-    let pstyle_id = ppr.and_then(|pr| pr.find(ns::W, "pStyle")).and_then(|e| e.attr(ns::W, "val"));
+    // A paragraph that names no style takes the default paragraph style.
+    let pstyle_id = ppr
+        .and_then(|pr| pr.find(ns::W, "pStyle"))
+        .and_then(|e| e.attr(ns::W, "val"))
+        .or(ctx.styles.default_paragraph);
 
     // Direct paragraph properties overlay the style chain: an explicit
     // outlineLvl of 9 ("no outline level") turns a style heading off.
@@ -362,6 +366,8 @@ struct InlineWalker<'a, 'b, 'e> {
     base: Style,
     /// Whether the paragraph's style chain hides its runs (`w:vanish`).
     base_hidden: bool,
+    /// Whether hidden text was left out here.
+    left_out: bool,
     pieces: Vec<Piece>,
     current: Vec<Inline>,
     fields: Vec<FieldFrame>,
@@ -373,6 +379,7 @@ impl<'a, 'b, 'e> InlineWalker<'a, 'b, 'e> {
             ctx,
             base,
             base_hidden,
+            left_out: false,
             pieces: Vec::new(),
             current: Vec::new(),
             fields: Vec::new(),
@@ -408,11 +415,12 @@ impl<'a, 'b, 'e> InlineWalker<'a, 'b, 'e> {
             }
             if child.is(ns::M, "oMathPara") {
                 // A math paragraph is displayed on its own line.
-                self.push_blocks(omath_para_to_tex(child).into_iter().map(Block::Math).collect());
+                let math = self.visible_math(child)?;
+                self.push_blocks(omath_para_to_tex(&math).into_iter().map(Block::Math).collect());
                 continue;
             }
             if child.is(ns::M, "oMath") {
-                let tex = omath_to_tex(child);
+                let tex = omath_to_tex(&self.visible_math(child)?);
                 if !tex.is_empty() {
                     self.push(Inline::Math(tex));
                 }
@@ -428,14 +436,20 @@ impl<'a, 'b, 'e> InlineWalker<'a, 'b, 'e> {
                     let target = self.hyperlink_link_target(child);
                     let mut inner = InlineWalker::new(self.ctx, self.base, self.base_hidden);
                     inner.walk(child)?;
+                    let hidden_label = inner.left_out;
+                    self.left_out |= hidden_label;
                     let (content, attachments) = split_pieces(inner.finish());
-                    if let Some(target) = target {
+                    match target {
+                        // A link whose whole label is hidden text is hidden
+                        // too: an empty label would render its URL.
+                        Some(_) if hidden_label && inlines_are_empty(&content) => {}
                         // An empty label still keeps a resolved target: the
                         // renderer shows the URL as the link text.
-                        self.push(Inline::Link { content, target });
-                    } else {
-                        for inline in content {
-                            self.push(inline);
+                        Some(target) => self.push(Inline::Link { content, target }),
+                        None => {
+                            for inline in content {
+                                self.push(inline);
+                            }
                         }
                     }
                     self.push_blocks(attachments);
@@ -444,6 +458,7 @@ impl<'a, 'b, 'e> InlineWalker<'a, 'b, 'e> {
                     let instr = child.attr(ns::W, "instr").unwrap_or("").to_string();
                     let mut inner = InlineWalker::new(self.ctx, self.base, self.base_hidden);
                     inner.walk(child)?;
+                    self.left_out |= inner.left_out;
                     let (content, attachments) = split_pieces(inner.finish());
                     self.push_field_result(&instr, content);
                     self.push_blocks(attachments);
@@ -500,10 +515,55 @@ impl<'a, 'b, 'e> InlineWalker<'a, 'b, 'e> {
         self.walk_run_content(run, style, hidden)
     }
 
+    /// Whether a run with these properties is hidden (`w:vanish`): a toggle
+    /// over the paragraph's value through the character style chain, with
+    /// direct formatting absolute.
+    fn run_hidden(&self, rpr: Option<&Element>) -> Result<bool, ConvertError> {
+        let Some(rpr) = rpr else { return Ok(self.base_hidden) };
+        let char_parity = match rpr.find(ns::W, "rStyle").and_then(|e| e.attr(ns::W, "val")) {
+            Some(id) => self.ctx.styles.run_toggles(id)?,
+            None => Default::default(),
+        };
+        Ok(on_off(rpr, "vanish").unwrap_or(self.base_hidden ^ char_parity.vanish))
+    }
+
+    /// An equation without its hidden runs: math runs (`m:r`) take
+    /// `w:vanish` from their `w:rPr` like text runs, and are left out and
+    /// counted the same way.
+    fn visible_math(&mut self, elem: &Element) -> Result<Element, ConvertError> {
+        let mut out = Element {
+            ns: elem.ns.clone(),
+            local: elem.local.clone(),
+            attrs: elem.attrs.clone(),
+            children: Vec::with_capacity(elem.children.len()),
+        };
+        for node in &elem.children {
+            match node {
+                Node::Elem(run) if run.is(ns::M, "r") => {
+                    let text: String =
+                        run.child_elems().filter(|t| t.is(ns::M, "t")).map(|t| t.text()).collect();
+                    if self.run_hidden(run.find(ns::W, "rPr"))? {
+                        self.left_out = true;
+                        self.ctx.hidden.borrow_mut().left_out(&text);
+                    } else {
+                        if !text.is_empty() {
+                            self.ctx.hidden.borrow_mut().visible();
+                        }
+                        out.children.push(node.clone());
+                    }
+                }
+                Node::Elem(child) => out.children.push(Node::Elem(self.visible_math(child)?)),
+                Node::Text(_) => out.children.push(node.clone()),
+            }
+        }
+        Ok(out)
+    }
+
     /// Run text, or for a hidden run (`w:vanish`) nothing: hidden text is
     /// left out of the model and counted (`Document::hidden_text_left_out`).
     fn push_text(&mut self, text: String, style: Style, hidden: bool) {
         if hidden {
+            self.left_out = true;
             self.ctx.hidden.borrow_mut().left_out(&text);
             return;
         }

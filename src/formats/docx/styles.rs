@@ -51,6 +51,9 @@ pub struct Styles<'a> {
     /// Whether docDefaults hide text (`w:vanish`), the base the style
     /// chains' vanish toggles flip over.
     pub doc_defaults_hidden: bool,
+    /// The default paragraph style (`w:default="1"`), which applies to a
+    /// paragraph that names no `w:pStyle`.
+    pub default_paragraph: Option<&'a str>,
 }
 
 impl<'a> Styles<'a> {
@@ -61,14 +64,22 @@ impl<'a> Styles<'a> {
                 chains: StyleChains::default(),
                 doc_defaults: Style::PLAIN,
                 doc_defaults_hidden: false,
+                default_paragraph: None,
             },
         }
     }
 
     pub fn parse(root: &'a Element) -> Styles<'a> {
         let mut chains = StyleChains::default();
+        let mut default_paragraph = None;
         for style in root.find_all(ns::W, "style") {
             if let Some(id) = style.attr(ns::W, "styleId") {
+                if default_paragraph.is_none()
+                    && style.attr(ns::W, "type") == Some("paragraph")
+                    && matches!(style.attr(ns::W, "default"), Some("1" | "true" | "on"))
+                {
+                    default_paragraph = Some(id);
+                }
                 let parent = style.find(ns::W, "basedOn").and_then(|e| e.attr(ns::W, "val"));
                 chains.insert(id, style, parent);
             }
@@ -79,7 +90,7 @@ impl<'a> Styles<'a> {
             .and_then(|d| d.find(ns::W, "rPr"));
         let doc_defaults = default_rpr.map(|rpr| rpr_delta(rpr).resolve()).unwrap_or(Style::PLAIN);
         let doc_defaults_hidden = default_rpr.and_then(|rpr| on_off(rpr, "vanish")) == Some(true);
-        Styles { chains, doc_defaults, doc_defaults_hidden }
+        Styles { chains, doc_defaults, doc_defaults_hidden, default_paragraph }
     }
 
     /// The parity of `true` toggle specifications along a style's `basedOn`
