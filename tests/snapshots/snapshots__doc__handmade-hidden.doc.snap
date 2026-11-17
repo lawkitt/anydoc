@@ -1,0 +1,9 @@
+---
+source: tests/snapshots.rs
+expression: output
+---
+Visible start visible end.
+
+Shown in a hidden paragraph.
+
+After.
