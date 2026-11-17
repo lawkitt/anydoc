@@ -11,6 +11,7 @@ use crate::model::Comment;
 use crate::shared::comments::{
     self, Anchors, Budget, CommentText, MAX_COMMENTS, MAX_FIELD_BYTES, TextSink, field,
 };
+use std::collections::{HashMap, HashSet};
 
 /// Which part of a comment a group's text belongs to.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -20,7 +21,8 @@ pub(super) enum AtnDest {
     None,
     /// The `\annotation` group: the comment's text.
     Text,
-    /// `\atnid`: the author's initials, not reported.
+    /// `\atnid`: the author's initials (not reported; a reply's
+    /// `\atnparent` may name its parent by them).
     Initials,
     /// `\atnauthor`.
     Author,
@@ -41,7 +43,7 @@ pub(super) enum AtnDest {
 impl AtnDest {
     /// Its text is read (the initials and ignorable groups are not).
     pub(super) fn reads_text(self) -> bool {
-        !matches!(self, AtnDest::None | AtnDest::Initials | AtnDest::Skip)
+        !matches!(self, AtnDest::None | AtnDest::Skip)
     }
 
     /// The destination a control word opens, if it is a comment one.
@@ -64,6 +66,7 @@ impl AtnDest {
 #[derive(Default)]
 struct Open {
     author: String,
+    initials: String,
     reference: String,
     date: String,
     parent: String,
@@ -79,8 +82,11 @@ pub(super) struct RtfComments {
     pub(super) anchors: Anchors,
     comments: Vec<Comment>,
     open: Option<Open>,
-    /// The last `\atnauthor`, for the next annotation.
+    /// The last `\atnauthor` and `\atnid`, for the next annotation.
     author: String,
+    initials: String,
+    /// Each comment's `\atnid`, beside `comments`.
+    comment_initials: Vec<String>,
     /// The `\atrfstart`/`\atrfend` bookmark being read.
     range: String,
     seen: usize,
@@ -98,11 +104,13 @@ impl RtfComments {
                 let counted_only = self.comments.len() >= MAX_COMMENTS;
                 self.open = Some(Open {
                     author: std::mem::take(&mut self.author),
+                    initials: std::mem::take(&mut self.initials),
                     counted_only,
                     ..Open::default()
                 });
             }
             AtnDest::Author => self.author.clear(),
+            AtnDest::Initials => self.initials.clear(),
             AtnDest::RangeStart | AtnDest::RangeEnd => self.range.clear(),
             _ => {}
         }
@@ -116,6 +124,7 @@ impl RtfComments {
         };
         match (dest, &mut self.open) {
             (AtnDest::Author, _) => short(&mut self.author),
+            (AtnDest::Initials, _) => short(&mut self.initials),
             (AtnDest::RangeStart | AtnDest::RangeEnd, _) => short(&mut self.range),
             (AtnDest::Text, Some(open)) => open.text.text(text),
             (AtnDest::Ref, Some(open)) => short(&mut open.reference),
@@ -151,11 +160,7 @@ impl RtfComments {
             return;
         }
         let reference = open.reference.trim();
-        let id = if reference.is_empty() {
-            format!("annotation-{}", self.seen)
-        } else {
-            field(reference)
-        };
+        let id = if reference.is_empty() { comments::unnamed(self.seen) } else { field(reference) };
         // The annotation sits where its reference mark is: without a range,
         // that paragraph is its anchor.
         self.anchors.point(&id);
@@ -169,17 +174,51 @@ impl RtfComments {
             parent_id: (!parent.is_empty()).then(|| field(parent)),
             resolved: false,
         });
+        self.comment_initials.push(field(open.initials.trim()));
     }
 
     /// The comments with their anchors, and how many more were counted.
     pub(super) fn finish(mut self) -> (Vec<Comment>, u32) {
         self.finish_annotation();
-        let mut anchors = self.anchors.finish();
+        let mut anchors = std::mem::take(&mut self.anchors).finish();
         for comment in &mut self.comments {
             comment.anchor_text = anchors.take(&comment.id);
         }
+        self.resolve_parents();
+        comments::name_unnamed(&mut self.comments);
         comments::settle_parents(&mut self.comments);
         (self.comments, self.not_extracted)
+    }
+}
+
+impl RtfComments {
+    /// `\atnparent` names the parent by its `\atnref` or, as the RTF
+    /// specification has it, by its `\atnid`: an id match wins, else the one
+    /// comment with those initials; initials several comments share name no
+    /// parent.
+    fn resolve_parents(&mut self) {
+        let ids: HashSet<&str> = self.comments.iter().map(|c| c.id.as_str()).collect();
+        let mut by_initials: HashMap<&str, Option<usize>> = HashMap::new();
+        for (i, initials) in self.comment_initials.iter().enumerate() {
+            if !initials.is_empty() {
+                by_initials.entry(initials).and_modify(|found| *found = None).or_insert(Some(i));
+            }
+        }
+        let resolved: Vec<Option<String>> = self
+            .comments
+            .iter()
+            .map(|c| {
+                let parent = c.parent_id.as_deref()?;
+                if ids.contains(parent) {
+                    return Some(parent.to_string());
+                }
+                let at = (*by_initials.get(parent)?)?;
+                Some(self.comments[at].id.clone())
+            })
+            .collect();
+        for (comment, parent) in self.comments.iter_mut().zip(resolved) {
+            comment.parent_id = parent;
+        }
     }
 }
 

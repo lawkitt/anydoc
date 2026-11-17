@@ -803,7 +803,7 @@ impl<'a> Parser<'a> {
         if let Some(dest) = AtnDest::for_word(word)
             && (self.state.suppress || SUPPRESSED_DESTINATIONS.contains(&word))
         {
-            self.flush_comment_pending();
+            self.flush_pending();
             if self.state.atn == AtnDest::None {
                 // A fallback skip left over from an earlier comment is spent.
                 self.comment_decoder.skip = 0;
@@ -811,6 +811,31 @@ impl<'a> Parser<'a> {
             }
             self.state.atn = dest;
             self.comments.open(dest);
+            // `{\*\atnref42}`: the value written as a parameter.
+            if let Some(value) = param
+                && dest.reads_text()
+                && dest != AtnDest::Text
+            {
+                self.comments.text(dest, &value.to_string());
+            }
+        }
+        // Nothing inside a comment reaches the body: only text controls
+        // apply there, and the destinations that would lift the suppression
+        // or write into the body (object results, shape text, notes,
+        // bookmarks, list labels, fields, pictures, tables) are not
+        // dispatched.
+        if self.state.atn != AtnDest::None {
+            if matches!(word, "par" | "sect") {
+                self.flush_pending();
+                if self.state.atn == AtnDest::Text && self.comment_reads() {
+                    self.comments.paragraph();
+                }
+            } else {
+                self.text_control(word, param)?;
+            }
+            self.state.suppress = true;
+            self.state.capture = Capture::None;
+            return Ok(());
         }
         if self.math_control(word, param) {
             return Ok(());
@@ -893,10 +918,6 @@ impl<'a> Parser<'a> {
             }
             "par" | "sect" => {
                 self.flush_pending();
-                if self.state.atn == AtnDest::Text && self.comment_reads() {
-                    self.flush_comment_pending();
-                    self.comments.paragraph();
-                }
                 if self.state.note.is_some() {
                     self.inlines.push(Inline::LineBreak);
                 } else if self.state.deleted {
@@ -928,8 +949,11 @@ impl<'a> Parser<'a> {
                     self.flush_comment_pending();
                     self.comments.text(AtnDest::Text, "\n");
                 }
-                if !self.state.suppress && !self.state.deleted && !self.state.hidden {
-                    self.inlines.push(Inline::LineBreak);
+                if !self.state.suppress && !self.state.deleted {
+                    self.comments.anchors.text("\n");
+                    if !self.state.hidden {
+                        self.inlines.push(Inline::LineBreak);
+                    }
                 }
             }
             // A comment keeps its tabs; the body renders them as spaces.

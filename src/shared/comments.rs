@@ -51,6 +51,11 @@ impl Budget {
         self.0 -= taken.len();
         dst.push_str(taken);
     }
+
+    /// Give back the bytes of a string that is dropped.
+    pub fn refund(&mut self, dropped: &str) {
+        self.0 = self.0.saturating_add(dropped.len()).min(MAX_TOTAL_BYTES);
+    }
 }
 
 /// The longest prefix of `s` at most `max` bytes long, at a char boundary.
@@ -201,6 +206,10 @@ impl TextSink for Anchors {
         };
         let text = paragraph.text.trim();
         for id in paragraph.points {
+            // A finished range is the anchor: the paragraph is not needed.
+            if self.ranges.contains_key(&id) {
+                continue;
+            }
             let mut anchor = String::new();
             self.budget.push(&mut anchor, text, MAX_TEXT_BYTES);
             self.points.insert(id, anchor);
@@ -225,6 +234,10 @@ impl TextSink for Anchors {
     fn range_end(&mut self, id: &str) {
         if let Some(at) = self.open.iter().position(|(open, _)| open == id) {
             let (id, text) = self.open.remove(at);
+            // The range replaces a paragraph anchor taken before it ended.
+            if let Some(point) = self.points.remove(&id) {
+                self.budget.refund(&point);
+            }
             let mut anchor = String::new();
             self.budget.push(&mut anchor, text.trim(), MAX_TEXT_BYTES);
             self.ranges.insert(id, anchor);
@@ -320,6 +333,40 @@ pub fn has_part(pkg: &Package, name: &str) -> bool {
     pkg.find_part_ignore_case(name).is_some()
 }
 
+/// The working id of a comment the source gives no id, the `n`th comment
+/// read. It starts with U+0000, which no XML attribute and no cleaned RTF
+/// text holds, so it can never meet an id the source wrote;
+/// [`name_unnamed`] gives it its reported name.
+pub fn unnamed(n: usize) -> String {
+    format!("\0{n}")
+}
+
+/// Name the comments [`unnamed`] gave working ids: `annotation-N`, or
+/// `annotation-N-K` with the first K that no other comment's id takes.
+/// Parent ids follow the renaming.
+pub fn name_unnamed(comments: &mut [Comment]) {
+    let mut taken: HashSet<String> =
+        comments.iter().filter(|c| !c.id.starts_with('\0')).map(|c| c.id.clone()).collect();
+    let mut renamed: HashMap<String, String> = HashMap::new();
+    for comment in comments.iter_mut() {
+        let Some(n) = comment.id.strip_prefix('\0') else { continue };
+        let base = format!("annotation-{n}");
+        let mut name = base.clone();
+        let mut k = 2;
+        while taken.contains(&name) {
+            name = format!("{base}-{k}");
+            k += 1;
+        }
+        taken.insert(name.clone());
+        renamed.insert(std::mem::replace(&mut comment.id, name.clone()), name);
+    }
+    for comment in comments.iter_mut() {
+        if let Some(new) = comment.parent_id.as_ref().and_then(|p| renamed.get(p)) {
+            comment.parent_id = Some(new.clone());
+        }
+    }
+}
+
 /// Drop parent ids that name no comment in the list, name the comment
 /// itself, or close a cycle, so following `parent_id` always ends at a
 /// thread's first comment.
@@ -389,6 +436,46 @@ mod tests {
         ];
         settle_parents(&mut comments);
         assert_eq!(parents(&comments), [None, Some("a"), None, None, Some("f"), None, Some("b")]);
+    }
+
+    #[test]
+    fn unnamed_comments_get_names_no_other_comment_has() {
+        let mut comments = vec![
+            comment("annotation-2", None),
+            comment(&unnamed(2), None),
+            comment("annotation-2-2", Some(&unnamed(2))),
+            comment(&unnamed(3), None),
+        ];
+        name_unnamed(&mut comments);
+        let ids: Vec<_> = comments.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, ["annotation-2", "annotation-2-3", "annotation-2-2", "annotation-3"]);
+        assert_eq!(comments[2].parent_id.as_deref(), Some("annotation-2-3"));
+    }
+
+    #[test]
+    fn a_finished_range_costs_its_paragraph_nothing() {
+        let mut anchors = Anchors { budget: Budget(10), ..Anchors::default() };
+        // ODT order: the point (in the first paragraph) before the range
+        // ends in the second.
+        anchors.paragraph_start();
+        anchors.range_start("1");
+        anchors.point("1");
+        anchors.text("aaaa");
+        anchors.paragraph_end();
+        anchors.paragraph_start();
+        anchors.text("bbbb");
+        anchors.range_end("1");
+        anchors.paragraph_end();
+        // DOCX order: the reference after the range, in its paragraph.
+        anchors.paragraph_start();
+        anchors.range_start("2");
+        anchors.text("cc");
+        anchors.range_end("2");
+        anchors.point("2");
+        anchors.paragraph_end();
+        let mut texts = anchors.finish();
+        assert_eq!(texts.take("1"), "aaaa\nbbbb");
+        assert_eq!(texts.take("2"), "c");
     }
 
     #[test]

@@ -14,10 +14,11 @@
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Comment {
-    /// The comment's id, unique within the document. DOCX: `w:id`. ODT:
-    /// `office:name`, or `annotation-N` (N counting the document's
-    /// annotations from 1) for an annotation without a name. RTF: the
-    /// `\atnref` bookmark, or `annotation-N` without one.
+    /// The comment's id. DOCX: `w:id`. ODT: `office:name`. RTF: the
+    /// `\atnref` bookmark. A comment without one is named `annotation-N`
+    /// (N counting the document's comments from 1), or `annotation-N-K`
+    /// with the first K no other comment's id takes, so a generated name
+    /// never repeats one the document wrote.
     pub id: String,
     /// Who wrote it, as the document records it (DOCX `w:author`, ODT
     /// `dc:creator`, RTF `\atnauthor`). Empty when the document names no
@@ -45,7 +46,9 @@ pub struct Comment {
     /// comment is in the same list. `None` for a comment that starts a
     /// thread, and for a reply whose parent is missing (or would close a
     /// cycle). DOCX: `w15:paraIdParent` in `commentsExtended.xml`. ODT:
-    /// LibreOffice's `loext:parent-name`. RTF: `\atnparent` where written.
+    /// LibreOffice's `loext:parent-name`. RTF: `\atnparent` where written,
+    /// naming the parent's `\atnref`, or its `\atnid` initials when only
+    /// one comment has them.
     pub parent_id: Option<String>,
     /// The comment is marked resolved (done). DOCX: `w15:done` in
     /// `commentsExtended.xml`. ODT: LibreOffice's `loext:resolved`. RTF has

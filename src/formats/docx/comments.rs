@@ -173,22 +173,24 @@ fn apply_extended(tree: &Element, para_ids: &[Option<String>], comments: &mut [C
             by_para.entry(para.as_str()).or_insert(i);
         }
     }
-    let mut entries = Vec::new();
+    // Applied as read, by index: duplicate entries cost nothing more, and
+    // the last one for a comment wins.
+    let mut parents: Vec<Option<usize>> = vec![None; comments.len()];
     for ex in tree.descendants(W15, "commentEx") {
         let Some(&at) =
             ex.attr(W15, "paraId").and_then(|p| by_para.get(p.to_ascii_uppercase().as_str()))
         else {
             continue;
         };
-        let done = matches!(ex.attr(W15, "done"), Some("1" | "true" | "on"));
-        let parent = ex
+        comments[at].resolved = matches!(ex.attr(W15, "done"), Some("1" | "true" | "on"));
+        parents[at] = ex
             .attr(W15, "paraIdParent")
             .and_then(|p| by_para.get(p.to_ascii_uppercase().as_str()))
-            .map(|&parent| comments[parent].id.clone());
-        entries.push((at, done, parent));
+            .copied();
     }
-    for (at, done, parent) in entries {
-        comments[at].resolved = done;
-        comments[at].parent_id = parent;
+    for (at, parent) in parents.into_iter().enumerate() {
+        if let Some(parent) = parent {
+            comments[at].parent_id = Some(comments[parent].id.clone());
+        }
     }
 }

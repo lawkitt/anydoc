@@ -34,7 +34,7 @@ pub(super) fn read(text: &Element) -> (Vec<Comment>, u32) {
         let name = annotation.attr(ns::OFFICE, "name").filter(|n| !n.is_empty());
         let id = match name {
             Some(name) => field(name),
-            None => format!("annotation-{seen}"),
+            None => comments::unnamed(seen),
         };
         if name.is_some() {
             anchors.range_start(&id);
@@ -59,6 +59,7 @@ pub(super) fn read(text: &Element) -> (Vec<Comment>, u32) {
     for comment in &mut out {
         comment.anchor_text = anchors.take(&comment.id);
     }
+    comments::name_unnamed(&mut out);
     comments::settle_parents(&mut out);
     (out, not_extracted)
 }

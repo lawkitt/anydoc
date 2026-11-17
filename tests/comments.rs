@@ -505,3 +505,104 @@ fn doc_counts_its_annotations() {
     // No annotation text, or a table that does not fit: nothing counted.
     assert_eq!(convert(&doc("Body.\r", "", 2), Format::Doc).comments_left_out, 0);
 }
+
+// ---------------------------------------------------------------------------
+// Review regressions.
+
+fn rtf_comments(rtf: &str) -> Conversion {
+    convert(rtf.as_bytes(), Format::Rtf)
+}
+
+#[test]
+fn rtf_destinations_inside_a_comment_never_reach_the_body() {
+    for inner in [
+        r"{\object\objemb{\*\objclass Package}{\*\objdata 00}{\result SECRET}}",
+        r"{\*\shpinst{\sp{\sn x}{\sv y}}{\*\shptxt SECRET}}",
+        r"{\footnote SECRET}",
+        r"{\*\bkmkstart SECRET}",
+        r"{\listtext SECRET}",
+        r"{\*\shppict{\pict\pngblip 89504e470d0a1a0a}}",
+        r"\intbl SECRET\cell\row",
+    ] {
+        let rtf = format!(r"{{\rtf1 Body{{\*\annotation {inner}}}.\par}}");
+        let converted = rtf_comments(&rtf);
+        assert_eq!(converted.markdown, "Body.\n", "{inner}");
+        assert_eq!(converted.images_left_out, 0, "{inner}");
+        assert_eq!(converted.comments.len(), 1, "{inner}");
+    }
+    // A paragraph mark in a comment inside a footnote stays in the comment.
+    let converted =
+        rtf_comments(r"{\rtf1 Body{\footnote Note{\*\annotation one\par two} end}.\par}");
+    assert!(!converted.markdown.contains("one") && !converted.markdown.contains("two"));
+    assert_eq!(converted.comments[0].text, "one\ntwo");
+}
+
+#[test]
+fn rtf_references_parents_and_line_breaks() {
+    // \atnref written as a parameter still names the range.
+    let converted = rtf_comments(
+        r"{\rtf1 A {\*\atrfstart 42}range{\*\atrfend 42}{\*\annotation{\*\atnref42}x} B\par}",
+    );
+    assert_eq!(rows(&converted.comments), [("42", "", "", "x", "range", None, false)]);
+
+    // \atnparent naming the parent's \atnid, as the specification has it.
+    let converted = rtf_comments(concat!(
+        r"{\rtf1 Text{\*\atnid JD}{\*\annotation{\*\atnref 100}root}",
+        r"{\*\atnid RS}{\*\annotation{\*\atnref 101}{\*\atnparent JD}reply}\par}"
+    ));
+    let parents: Vec<_> = converted.comments.iter().map(|c| c.parent_id.as_deref()).collect();
+    assert_eq!(parents, [None, Some("100")]);
+
+    // Initials two comments share name no parent.
+    let converted = rtf_comments(concat!(
+        r"{\rtf1 Text{\*\atnid JD}{\*\annotation{\*\atnref 1}a}{\*\atnid JD}{\*\annotation{\*\atnref 2}b}",
+        r"{\*\atnid RS}{\*\annotation{\*\atnref 3}{\*\atnparent JD}c}\par}"
+    ));
+    assert_eq!(converted.comments[2].parent_id, None);
+
+    // Line breaks in the body reach the anchors.
+    let converted = rtf_comments(
+        r"{\rtf1 {\*\atrfstart 1}one\line two{\*\atrfend 1}{\*\annotation{\*\atnref 1}x}\par}",
+    );
+    assert_eq!(converted.comments[0].anchor_text, "one\ntwo");
+}
+
+#[test]
+fn generated_ids_never_collide_with_written_ones() {
+    let odt = odf(
+        "application/vnd.oasis.opendocument.text",
+        concat!(
+            r#"<office:text><text:p>A<office:annotation office:name="annotation-2"><text:p>named</text:p></office:annotation>x<office:annotation-end office:name="annotation-2"/></text:p>"#,
+            r#"<text:p>B<office:annotation><text:p>unnamed</text:p></office:annotation></text:p></office:text>"#
+        ),
+    );
+    let converted = convert(&odt, Format::Odt);
+    let ids: Vec<_> =
+        converted.comments.iter().map(|c| (c.id.as_str(), c.anchor_text.as_str())).collect();
+    assert_eq!(ids, [("annotation-2", "x"), ("annotation-2-2", "B")]);
+
+    let rtf = rtf_comments(concat!(
+        r"{\rtf1 A{\*\atrfstart annotation-2}x{\*\atrfend annotation-2}{\*\annotation{\*\atnref annotation-2}n}\par ",
+        r"B{\*\annotation u}\par}"
+    ));
+    let ids: Vec<_> =
+        rtf.comments.iter().map(|c| (c.id.as_str(), c.anchor_text.as_str())).collect();
+    assert_eq!(ids, [("annotation-2", "x"), ("annotation-2-2", "B")]);
+}
+
+#[test]
+fn every_range_within_the_total_budget_keeps_its_anchor() {
+    // 100 ranges of 64 KiB: 6.25 MiB of anchors, under the 8 MiB budget.
+    let text = "y".repeat(64 * 1024);
+    let body: String =
+        (0..100).map(|i| ranged(&i.to_string()).replace("anchored", &text)).collect();
+    let comments: String = (0..100).map(|i| comment(&i.to_string(), "00", "n")).collect();
+    let bytes = package(&[
+        ("_rels/.rels", ROOT_RELS),
+        ("word/document.xml", &document(&body)),
+        ("word/comments.xml", &comments_part(&comments)),
+    ]);
+    let converted = convert(&bytes, Format::Docx);
+    assert_eq!(converted.comments.len(), 100);
+    assert!(converted.comments.iter().all(|c| c.anchor_text.len() == text.len()));
+}
