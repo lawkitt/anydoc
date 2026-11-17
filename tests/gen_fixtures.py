@@ -1385,7 +1385,7 @@ def tables_docx():
 # ---------------------------------------------------------------------------
 # Nested tables: a single-cell outer table wrapping a real table (the Word
 # form shape) must unwrap so the inner grid survives; a nested table inside a
-# multi-cell grid stays flattened in its cell.
+# multi-cell grid gives one line per non-empty cell (see nested_grid_docx).
 
 def nested_docx():
     def p(text):
@@ -1413,6 +1413,49 @@ def nested_docx():
               '<w:docDefaults><w:rPrDefault><w:rPr/></w:rPrDefault></w:docDefaults></w:styles>')
     ct = CONTENT_TYPES_BASE.format(extra="")
     write_zip(OUT / "docx" / "handmade-nested.docx", [
+        ("[Content_Types].xml", ct),
+        ("_rels/.rels", ROOT_RELS),
+        ("word/document.xml", document),
+        ("word/styles.xml", styles),
+    ])
+
+# ---------------------------------------------------------------------------
+# firecrawl/anydoc#14: a table nested in a multi-cell table (Apache Tika's
+# testWORD.docx shape: a 2x2 grid with empty cells in row 2, column 2 of a
+# 3x2 table, plus a cell holding text around a nested table). A GFM cell can't
+# hold the grid, so each non-empty inner cell becomes its own line; nothing is
+# joined with a separator the document doesn't have.
+
+def nested_grid_docx():
+    def p(text):
+        return f'<w:p><w:r><w:t xml:space="preserve">{text}</w:t></w:r></w:p>'
+
+    def tc(*content):
+        return '<w:tc><w:tcPr/>' + ''.join(content) + '</w:tc>'
+
+    empty = '<w:p/>'
+    inner = ('<w:tbl>'
+             '<w:tr>' + tc(p("Nested table")) + tc(empty) + '</w:tr>'
+             '<w:tr>' + tc(empty) + tc(p("More of our nested table")) + '</w:tr>'
+             '</w:tbl>')
+    pairs = ('<w:tbl>'
+             '<w:tr>' + tc(p("Height")) + tc(p("120")) + '</w:tr>'
+             '<w:tr>' + tc(p("Weight")) + tc(p("34")) + '</w:tr>'
+             '</w:tbl>')
+    outer = ('<w:tbl>'
+             '<w:tr>' + tc(p("Column one")) + tc(p("Column two")) + '</w:tr>'
+             '<w:tr>' + tc(p("Row two")) + tc(inner) + '</w:tr>'
+             '<w:tr>' + tc(p("Row three")) + tc(p("Measured:"), pairs, p("End of cell")) + '</w:tr>'
+             '</w:tbl>')
+    document = (f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                f'<w:document {W}><w:body>'
+                + p("Before") + outer + p("After")
+                + '</w:body></w:document>')
+    styles = (f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+              f'<w:styles {W}>'
+              '<w:docDefaults><w:rPrDefault><w:rPr/></w:rPrDefault></w:docDefaults></w:styles>')
+    ct = CONTENT_TYPES_BASE.format(extra="")
+    write_zip(OUT / "docx" / "handmade-nested-grid.docx", [
         ("[Content_Types].xml", ct),
         ("_rels/.rels", ROOT_RELS),
         ("word/document.xml", document),
@@ -2515,6 +2558,7 @@ def main():
     sparsenotes_ppt()
     tables_docx()
     nested_docx()
+    nested_grid_docx()
     outline_docx()
     blockstyle_docx()
     blockstyle_odt()

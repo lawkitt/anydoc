@@ -1,0 +1,12 @@
+---
+source: tests/snapshots.rs
+expression: output
+---
+Before
+
+| Column one | Column two |
+| --- | --- |
+| Row two | Nested table<br>More of our nested table |
+| Row three | Measured:<br>Height<br>120<br>Weight<br>34<br>End of cell |
+
+After

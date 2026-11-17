@@ -303,7 +303,7 @@ fn render_block(block: &Block, rc: &Ctx) -> Option<String> {
         // Trivial layout tables are scaffolding; render their content directly.
         // A single-cell table wrapping a nested table is the same scaffolding
         // shape (Word forms often wrap their whole body in one): flattening
-        // would collapse the inner grid into `a / b` runs, so unwrap the
+        // would collapse the inner grid into one line per cell, so unwrap the
         // wrapper and let the nested table render as a real one.
         Block::Table(t)
             if t.is_single_cell() && (t.kind == TableKind::Layout || wraps_table(t)) =>
