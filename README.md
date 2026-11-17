@@ -137,6 +137,8 @@ let converted = anydoc::to_markdown_with("contract.pdf", options)?;
 // converted.markdown, converted.pages_needing_ocr, converted.page_count
 ```
 
+PDF conversion (pdf-inspector and lopdf) is the `pdf` cargo feature, on by default. Build with `default-features = false` to leave it out: PDFs are still detected as `Format::Pdf`, and converting one fails with `ConvertError::Unsupported`.
+
 ## OCR
 
 anydoc reads text-based PDFs locally but does no OCR, so a PDF with scanned or image-only pages fails with `NeedsOcr`. Opt in and those documents go to [Firecrawl Parse](https://firecrawl.dev/parse), which OCRs them and returns the same Markdown. No signup needed; set `FIRECRAWL_API_KEY` for higher limits.
