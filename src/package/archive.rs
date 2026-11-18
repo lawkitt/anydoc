@@ -90,6 +90,20 @@ impl<'a> Package<'a> {
         self.zip.index_for_name(name.trim_start_matches('/')).is_some()
     }
 
+    /// The entry name of a part, matched ASCII case-insensitively as OPC
+    /// part names are; an exact match wins. Reads nothing.
+    pub fn find_part_ignore_case(&self, name: &str) -> Option<String> {
+        let name = name.trim_start_matches('/');
+        if self.zip.index_for_name(name).is_some() {
+            return Some(name.to_string());
+        }
+        self.zip
+            .file_names()
+            .filter_map(Result::ok)
+            .find(|entry| entry.eq_ignore_ascii_case(name))
+            .map(|entry| entry.into_owned())
+    }
+
     pub fn required_part(&mut self, name: &str) -> Result<Rc<[u8]>, ConvertError> {
         self.part(name)?.ok_or_else(|| ConvertError::MissingPart { part: name.to_string() })
     }

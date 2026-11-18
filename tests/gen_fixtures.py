@@ -2420,6 +2420,331 @@ def hidden_rtf():
     (OUT / "rtf").mkdir(parents=True, exist_ok=True)
     (OUT / "rtf" / "handmade-hidden.rtf").write_bytes(b"\n".join(parts))
 
+# ---------------------------------------------------------------------------
+# Comments as structured data (lawkitt/mdoc#927): the same seven comments in
+# DOCX, ODT and RTF - a range, a range over two paragraphs, a point comment,
+# a reply, a resolved comment, an empty comment, and Cyrillic text and
+# author - plus PPTX and XLSX comments that are only counted. Comment text
+# never reaches the Markdown; tests/comments.rs pins what each reports.
+
+W14 = 'xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml"'
+W15 = 'xmlns:w15="http://schemas.microsoft.com/office/word/2012/wordml"'
+COMMENT_DATE = "2026-11-18T09:30:00Z"
+
+
+def comments_docx():
+    def r(text):
+        return f'<w:r><w:t xml:space="preserve">{text}</w:t></w:r>'
+
+    def start(i):
+        return f'<w:commentRangeStart w:id="{i}"/>'
+
+    def end(i):
+        return f'<w:commentRangeEnd w:id="{i}"/>'
+
+    def ref(i):
+        return (f'<w:r><w:rPr><w:rStyle w:val="CommentReference"/></w:rPr>'
+                f'<w:commentReference w:id="{i}"/></w:r>')
+
+    def p(*parts):
+        return f"<w:p>{''.join(parts)}</w:p>"
+
+    deleted = ('<w:del w:id="90" w:author="Alice Reviewer" w:date="2026-11-18T09:00:00Z">'
+               '<w:r><w:delText xml:space="preserve">gone </w:delText></w:r></w:del>')
+    body = "".join([
+        # 0: a range; 3 replies to it over the same range.
+        p(r("Intro with "), start(0), start(3), r("commented "), deleted, r("words"),
+          end(0), ref(0), end(3), ref(3), r(" here.")),
+        # 1: a range over two paragraphs.
+        p(r("Second paragraph "), start(1), r("spans two")),
+        p(r("paragraphs"), end(1), ref(1), r(" and ends.")),
+        # 2: a point comment, anchored to its paragraph.
+        p(r("A point comment sits here."), ref(2)),
+        # 4: resolved; 5: empty.
+        p(r("Some "), start(4), r("resolved words"), end(4), ref(4), r(" and an "),
+          start(5), r("empty note"), end(5), ref(5), r(".")),
+        # 6: Cyrillic text and author.
+        p(r("Russian: "), start(6), r("договор поставки"), end(6), ref(6), r(".")),
+    ])
+    document = (f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                f"<w:document {W}><w:body>{body}</w:body></w:document>")
+
+    def comment(i, author, initials, paras, date=COMMENT_DATE):
+        out = []
+        for n, (para_id, runs) in enumerate(paras):
+            mark = '<w:r><w:annotationRef/></w:r>' if n == 0 else ""
+            out.append(f'<w:p w14:paraId="{para_id}"><w:pPr><w:pStyle w:val="CommentText"/></w:pPr>'
+                       f"{mark}{runs}</w:p>")
+        return (f'<w:comment w:id="{i}" w:author="{author}" w:date="{date}" '
+                f'w:initials="{initials}">{"".join(out)}</w:comment>')
+
+    comments = (f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                f"<w:comments {W} {W14}>"
+                + comment(0, "Alice Reviewer", "AR", [("1A2B3C4D", r("Check this range."))])
+                + comment(1, "Alice Reviewer", "AR", [
+                    ("00000010", r("First line.")),
+                    ("00000011", r("Second") + "<w:r><w:tab/></w:r>" + r("line."))])
+                + comment(2, "Carol", "C", [("00000020", r("A point comment."))])
+                + comment(3, "Bob Builder", "BB", [("00000030", r("Agreed."))],
+                          date="2026-11-18T10:15:00Z")
+                + comment(4, "Bob Builder", "BB", [("00000040", r("Fixed, resolving."))])
+                + comment(5, "Alice Reviewer", "AR", [("00000050", "")])
+                + comment(6, "Иван Петров", "ИП", [("00000060", r("Проверьте формулировку."))])
+                + "</w:comments>")
+    # The reply names its parent in lower case: paragraph ids are hex.
+    extended = (f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                f"<w15:commentsEx {W15}>"
+                '<w15:commentEx w15:paraId="1A2B3C4D" w15:done="0"/>'
+                '<w15:commentEx w15:paraId="00000011" w15:done="0"/>'
+                '<w15:commentEx w15:paraId="00000030" w15:paraIdParent="1a2b3c4d" w15:done="0"/>'
+                '<w15:commentEx w15:paraId="00000040" w15:done="1"/>'
+                "</w15:commentsEx>")
+    rels = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" Target="comments.xml"/>
+<Relationship Id="rId2" Type="http://schemas.microsoft.com/office/2011/relationships/commentsExtended" Target="commentsExtended.xml"/>
+</Relationships>"""
+    ct = CONTENT_TYPES_BASE.format(extra=(
+        '<Override PartName="/word/comments.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml"/>'
+        '<Override PartName="/word/commentsExtended.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.commentsExtended+xml"/>'))
+    write_zip(OUT / "docx" / "handmade-comments.docx", [
+        ("[Content_Types].xml", ct),
+        ("_rels/.rels", ROOT_RELS),
+        ("word/document.xml", document),
+        ("word/_rels/document.xml.rels", rels),
+        ("word/comments.xml", comments),
+        ("word/commentsExtended.xml", extended),
+    ])
+
+
+def comments_odt():
+    def note(name, creator, paras, date="2026-11-18T09:30:00", extra=""):
+        attr = f' office:name="{name}"' if name else ""
+        when = f"<dc:date>{date}</dc:date>" if date else ""
+        body = "".join(f"<text:p>{t}</text:p>" for t in paras)
+        return (f"<office:annotation{attr}{extra}><dc:creator>{creator}</dc:creator>"
+                f"{when}{body}</office:annotation>")
+
+    def end(name):
+        return f'<office:annotation-end office:name="{name}"/>'
+
+    body = "".join([
+        "<text:p>Intro with "
+        + note("__Annotation__1", "Alice Reviewer", ["Check this range."])
+        + note("__Annotation__4", "Bob Builder", ["Agreed."], date="2026-11-18T10:15:00",
+               extra=' loext:parent-name="__Annotation__1"')
+        + "commented <text:span>words</text:span>" + end("__Annotation__1") + end("__Annotation__4")
+        + " here.</text:p>",
+        "<text:p>Second paragraph "
+        + note("__Annotation__2", "Alice Reviewer", ["First line.", "Second<text:tab/>line."])
+        + "spans two</text:p>",
+        "<text:p>paragraphs" + end("__Annotation__2") + " and ends.</text:p>",
+        # No name, so no range: anchored to its paragraph.
+        "<text:p>A point comment sits here."
+        + note(None, "Carol", ["A point comment."]) + "</text:p>",
+        "<text:p>Some "
+        + note("__Annotation__5", "Bob Builder", ["Fixed, resolving."], extra=' loext:resolved="true"')
+        + "resolved words" + end("__Annotation__5") + " and an "
+        + note("__Annotation__6", "Alice Reviewer", [""], date="")
+        + "empty note" + end("__Annotation__6") + ".</text:p>",
+        '<text:h text:outline-level="1">Russian: '
+        + note("__Annotation__7", "Иван Петров", ["Проверьте формулировку."])
+        + "договор поставки" + end("__Annotation__7") + ".</text:h>",
+    ])
+    content = f"""<?xml version="1.0" encoding="UTF-8"?>
+<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+ xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+ xmlns:dc="http://purl.org/dc/elements/1.1/"
+ xmlns:loext="urn:org:documentfoundation:names:experimental:office:xmlns:loext:1.0"
+ office:version="1.3">
+<office:body><office:text>{body}</office:text></office:body></office:document-content>"""
+    write_zip(OUT / "odt" / "handmade-comments.odt", [
+        ("content.xml", content.encode("utf-8")),
+    ], mimetype_first="application/vnd.oasis.opendocument.text")
+
+
+def rtf_dttm(year, month, day, hour, minute, weekday):
+    return minute | hour << 6 | day << 11 | month << 16 | (year - 1900) << 20 | weekday << 29
+
+
+def comments_rtf():
+    def cp1251(text):
+        return "".join(f"\\'{b:02x}" for b in text.encode("cp1251")).encode("ascii")
+
+    def uni(text):
+        return "".join(f"\\u{ord(c)}?" for c in text).encode("ascii")
+
+    date = str(rtf_dttm(2026, 11, 18, 9, 30, 3)).encode()
+    later = str(rtf_dttm(2026, 11, 18, 10, 15, 3)).encode()
+
+    def annotation(initials, author, ref, text, when=date, parent=b""):
+        reference = rb"{\*\atnref " + ref + b"}" if ref else b""
+        reply = rb"{\*\atnparent " + parent + b"}" if parent else b""
+        stamp = rb"{\*\atndate " + when + b"}" if when else b""
+        return (rb"{\*\atnid " + initials + rb"}{\*\atnauthor " + author + rb"}\chatn "
+                + rb"{\*\annotation" + reference + reply + stamp
+                + rb"\pard\plain {\chatn }" + text + b"}")
+
+    def start(ref):
+        return rb"{\*\atrfstart " + ref + b"}"
+
+    def end(ref):
+        return rb"{\*\atrfend " + ref + b"}"
+
+    parts = [
+        rb"{\rtf1\ansi\ansicpg1252\deff0",
+        rb"{\fonttbl{\f0\fswiss\fcharset0 Arial;}{\f1\fswiss\fcharset204 Arial Cyr;}}",
+        # 1: a range (a tracked deletion inside it is not its text); 4
+        # replies to it over the same range. The hyperlink's result is kept.
+        rb"\pard\plain Intro with " + start(b"1") + start(b"4") + rb"commented {\deleted gone }words"
+        + end(b"1") + end(b"4")
+        + annotation(b"AR", b"Alice Reviewer", b"1",
+                     rb"Check this {\field{\*\fldinst HYPERLINK " + b'"https://example.com"'
+                     + rb"}{\fldrslt range}}.")
+        + annotation(b"BB", b"Bob Builder", b"4", b"Agreed.", when=later, parent=b"1")
+        + rb" here.\par",
+        # 2: a range over two paragraphs; its text has two paragraphs too.
+        rb"\pard\plain Second paragraph " + start(b"2") + rb"spans two\par",
+        rb"\pard\plain paragraphs" + end(b"2")
+        + annotation(b"AR", b"Alice Reviewer", b"2", rb"First line.\par Second\tab line.")
+        + rb" and ends.\par",
+        # A point comment: no \atnref, anchored to its paragraph.
+        rb"\pard\plain A point comment sits here."
+        + annotation(b"C", b"Carol", b"", b"A point comment.") + rb"\par",
+        # RTF has no resolved state; 6 is empty.
+        rb"\pard\plain Some " + start(b"5") + b"resolved words" + end(b"5")
+        + annotation(b"BB", b"Bob Builder", b"5", b"Fixed, resolving.")
+        + b" and an " + start(b"6") + b"empty note" + end(b"6")
+        + annotation(b"AR", b"Alice Reviewer", b"6", b"", when=b"") + rb".\par",
+        # 7: Cyrillic, the author as \u escapes and the text in code page 1251.
+        rb"\pard\plain Russian: " + start(b"7") + rb"{\f1 " + cp1251("договор поставки") + b"}"
+        + end(b"7")
+        + annotation(uni("ИП"), uni("Иван Петров"), b"7", rb"{\f1 " + cp1251("Проверьте формулировку.") + b"}")
+        + rb".\par",
+        rb"}",
+    ]
+    (OUT / "rtf").mkdir(parents=True, exist_ok=True)
+    (OUT / "rtf" / "handmade-comments.rtf").write_bytes(b"\n".join(parts))
+
+
+def comments_pptx():
+    """Counted only: slide 1 has two legacy comments, slide 2 one modern
+    comment with one reply - 4."""
+    def slide(text):
+        return f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:sld {PPTX_NS}><p:cSld><p:spTree>
+<p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/>
+<p:sp><p:nvSpPr><p:cNvPr id="2" name="Body"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr>
+<p:spPr/><p:txBody><a:bodyPr/><a:p><a:r><a:t>{text}</a:t></a:r></a:p></p:txBody></p:sp>
+</p:spTree></p:cSld></p:sld>"""
+
+    def rels(rel_type, target):
+        return f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="{rel_type}" Target="{target}"/>
+</Relationships>"""
+
+    presentation = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:presentation {PPTX_NS}>
+<p:sldIdLst><p:sldId id="256" r:id="rId1"/><p:sldId id="257" r:id="rId2"/></p:sldIdLst>
+</p:presentation>"""
+    pres_rels = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide1.xml"/>
+<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide2.xml"/>
+</Relationships>"""
+    root_rels = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="ppt/presentation.xml"/>
+</Relationships>"""
+    legacy = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:cmLst xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
+<p:cm authorId="0" dt="2026-11-18T09:30:00.000" idx="1"><p:pos x="10" y="10"/><p:text>SECRET legacy one</p:text></p:cm>
+<p:cm authorId="1" dt="2026-11-18T09:31:00.000" idx="1"><p:pos x="20" y="20"/><p:text>SECRET legacy two</p:text></p:cm>
+</p:cmLst>"""
+    modern = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p188:cmLst xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:p188="http://schemas.microsoft.com/office/powerpoint/2018/8/main">
+<p188:cm id="{00000000-0000-0000-0000-000000000001}" authorId="{00000000-0000-0000-0000-0000000000A1}" created="2026-11-18T09:30:00.000">
+<p188:replyLst><p188:reply id="{00000000-0000-0000-0000-000000000002}" authorId="{00000000-0000-0000-0000-0000000000A2}" created="2026-11-18T09:35:00.000">
+<p188:txBody><a:bodyPr/><a:p><a:r><a:t>SECRET reply</a:t></a:r></a:p></p188:txBody></p188:reply></p188:replyLst>
+<p188:txBody><a:bodyPr/><a:p><a:r><a:t>SECRET modern</a:t></a:r></a:p></p188:txBody></p188:cm>
+</p188:cmLst>"""
+    write_zip(OUT / "pptx" / "handmade-comments.pptx", [
+        ("[Content_Types].xml", CONTENT_TYPES_BASE.format(extra="")),
+        ("_rels/.rels", root_rels),
+        ("ppt/presentation.xml", presentation),
+        ("ppt/_rels/presentation.xml.rels", pres_rels),
+        ("ppt/slides/slide1.xml", slide("Slide with legacy comments")),
+        ("ppt/slides/_rels/slide1.xml.rels", rels(
+            "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments",
+            "../comments/comment1.xml")),
+        ("ppt/slides/slide2.xml", slide("Slide with a modern thread")),
+        ("ppt/slides/_rels/slide2.xml.rels", rels(
+            "http://schemas.microsoft.com/office/2018/10/relationships/comments",
+            "../comments/modernComment_101_0.xml")),
+        ("ppt/comments/comment1.xml", legacy),
+        ("ppt/comments/modernComment_101_0.xml", modern),
+    ])
+
+
+def comments_xlsx():
+    """Counted only: a thread on A1 (a comment and a reply) with its legacy
+    copy, and a note on B2 - 3."""
+    ct = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+<Default Extension="xml" ContentType="application/xml"/>
+<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+</Types>"""
+    root_rels = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>"""
+    workbook = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+ xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+<sheets><sheet name="Notes" sheetId="1" r:id="rId1"/></sheets></workbook>"""
+    wb_rels = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+</Relationships>"""
+    sheet = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+<sheetData>
+<row r="1"><c r="A1" t="inlineStr"><is><t>Commented cell</t></is></c></row>
+<row r="2"><c r="B2" t="inlineStr"><is><t>Noted cell</t></is></c></row>
+</sheetData>
+</worksheet>"""
+    sheet_rels = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.microsoft.com/office/2017/10/relationships/threadedComment" Target="../threadedComments/threadedComment1.xml"/>
+<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" Target="../comments1.xml"/>
+</Relationships>"""
+    threaded = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<ThreadedComments xmlns="http://schemas.microsoft.com/office/spreadsheetml/2018/threadedcomments">
+<threadedComment ref="A1" dT="2026-11-18T09:30:00.00" personId="{00000000-0000-0000-0000-0000000000A1}" id="{00000000-0000-0000-0000-000000000001}"><text>SECRET thread</text></threadedComment>
+<threadedComment ref="A1" dT="2026-11-18T09:35:00.00" personId="{00000000-0000-0000-0000-0000000000A2}" id="{00000000-0000-0000-0000-000000000002}" parentId="{00000000-0000-0000-0000-000000000001}"><text>SECRET reply</text></threadedComment>
+</ThreadedComments>"""
+    notes = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<comments xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+<authors><author>tc={00000000-0000-0000-0000-000000000001}</author><author>Alice Reviewer</author></authors>
+<commentList>
+<comment ref="A1" authorId="0"><text><t>[Threaded comment] SECRET thread</t></text></comment>
+<comment ref="B2" authorId="1"><text><t>SECRET note</t></text></comment>
+</commentList></comments>"""
+    write_zip(OUT / "xlsx" / "handmade-comments.xlsx", [
+        ("[Content_Types].xml", ct),
+        ("_rels/.rels", root_rels),
+        ("xl/workbook.xml", workbook),
+        ("xl/_rels/workbook.xml.rels", wb_rels),
+        ("xl/worksheets/sheet1.xml", sheet),
+        ("xl/worksheets/_rels/sheet1.xml.rels", sheet_rels),
+        ("xl/threadedComments/threadedComment1.xml", threaded),
+        ("xl/comments1.xml", notes),
+    ])
+
+
 
 def hidden_doc():
     """Binary .doc with hidden text through styles: a paragraph style whose
@@ -2581,6 +2906,11 @@ def main():
     hidden_docx()
     hidden_rtf()
     hidden_doc()
+    comments_docx()
+    comments_odt()
+    comments_rtf()
+    comments_pptx()
+    comments_xlsx()
     csvs()
     malformed()
     abuse()

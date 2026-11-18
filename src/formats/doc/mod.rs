@@ -141,7 +141,32 @@ pub fn parse(bytes: &[u8]) -> Result<Document, ConvertError> {
     }
     let assets = std::mem::take(&mut assembler.assets.borrow_mut().assets);
     let hidden_text_left_out = assembler.hidden.borrow().count();
-    Ok(Document { blocks, notes, assets, source_images: None, hidden_text_left_out })
+    Ok(Document {
+        blocks,
+        notes,
+        assets,
+        source_images: None,
+        hidden_text_left_out,
+        comments: Vec::new(),
+        comments_not_extracted: annotation_count(&word_doc, &table, ccp_atn),
+    })
+}
+
+/// How many comments (annotations) the document carries, counted only: the
+/// entries of the annotation reference table (`PlcfandRef`, FibRgFcLcb97
+/// `fcPlcfandRef`/`lcbPlcfandRef`), a PLC of 30-byte `ATRDPre10`. 0 unless
+/// the document has annotation text and the table is whole and in bounds.
+fn annotation_count(word_doc: &[u8], table: &[u8], ccp_atn: usize) -> u32 {
+    const ATRD_BYTES: usize = 30;
+    let fc = get_u32(word_doc, 0xBA).unwrap_or(0) as usize;
+    let lcb = get_u32(word_doc, 0xBE).unwrap_or(0) as usize;
+    if ccp_atn == 0 || lcb < 4 || !(lcb - 4).is_multiple_of(4 + ATRD_BYTES) {
+        return 0;
+    }
+    if table.get(fc..fc.saturating_add(lcb)).is_none() {
+        return 0;
+    }
+    u32::try_from((lcb - 4) / (4 + ATRD_BYTES)).unwrap_or(u32::MAX)
 }
 
 /// Read a PLC's CP array; n is the number of data elements.
