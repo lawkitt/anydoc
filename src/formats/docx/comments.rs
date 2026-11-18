@@ -89,8 +89,8 @@ fn enter(elem: &Element, sink: &mut impl TextSink) -> bool {
             false
         }
         "sym" => {
-            if let Some(glyph) = super::symbols::checkbox(elem) {
-                sink.text(&glyph.to_string());
+            if let Some(glyph) = super::symbols::glyph(elem) {
+                sink.text(&glyph);
             }
             false
         }
