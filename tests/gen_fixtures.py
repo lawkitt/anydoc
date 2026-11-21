@@ -2083,6 +2083,27 @@ def csvs():
         'a;b;c\n"1,5";"2,5";x\n"3,0";y;z\n', encoding="utf-8", newline="")
     (d / "handmade-utf16.csv").write_bytes(
         b"\xff\xfe" + "col1,col2\nnaïve,café\nΑθήνα,数据\n".encode("utf-16-le"))
+    # Legacy encodings without a BOM, each with a UTF-8 twin that must
+    # convert to the same Markdown. Names are fictional; semicolons and
+    # decimal commas are what a Russian or European Excel exports.
+    russian = (
+        "ФИО;Город;Должность;Сумма\n"
+        "Белозёрова Анна Викторовна;Москва;бухгалтер;1 250,00\n"
+        "Кудрявцев Олег Петрович;Санкт-Петербург;инженер;980,50\n"
+        "Шелестова Ирина Юрьевна;Казань;юрист;3 400,00\n"
+    )
+    (d / "russian-utf8.csv").write_bytes(russian.encode("utf-8"))
+    (d / "russian-utf8-bom.csv").write_bytes(b"\xef\xbb\xbf" + russian.encode("utf-8"))
+    (d / "russian-windows-1251.csv").write_bytes(russian.encode("cp1251"))
+    (d / "russian-koi8-r.csv").write_bytes(russian.encode("koi8_r"))
+    western = (
+        "Name;Ville;Straße;Betrag\n"
+        "François Dupré;Genève;Rue de l'Hôpital 3;1.250,00 €\n"
+        "Jürgen Weißmüller;Köln;Hauptstraße 12;980,50 €\n"
+        "Inés Peñalosa;Málaga;Calle Señora 7;3.400,00 €\n"
+    )
+    (d / "western-utf8.csv").write_bytes(western.encode("utf-8"))
+    (d / "western-windows-1252.csv").write_bytes(western.encode("cp1252"))
 
 
 # ---------------------------------------------------------------------------
