@@ -178,6 +178,23 @@ pub struct Conversion {
     /// out, and so is a hyperlink whose whole label is hidden. Always 0 for
     /// the other formats, PDFs included.
     pub hidden_text_left_out: u32,
+    /// Hidden worksheets left out of the Markdown, from XLSX, XLSB, XLS and
+    /// ODS: Excel's hidden and very hidden sheets, and ODS tables whose
+    /// style sets `table:display="false"`. Each counts whether or not it
+    /// holds anything, since telling would mean reading it. Hidden chart and
+    /// macro sheets are not counted. Always 0 for the other formats.
+    pub hidden_sheets_left_out: u32,
+    /// Hidden rows of the visible worksheets left out of the Markdown because
+    /// they hold a value (a cell with text or a checkbox, in any column):
+    /// rows hidden by hand or by a filter, from XLSX, XLSB, XLS and ODS.
+    /// Empty hidden rows are not counted. Always 0 for the other formats.
+    pub hidden_rows_left_out: u32,
+    /// Hidden columns of the visible worksheets left out of the Markdown
+    /// because they hold a value, in any row, from XLSX, XLSB, XLS and ODS.
+    /// A value in a hidden row and a hidden column counts toward both. Empty
+    /// hidden columns, such as every column past the data hidden at once,
+    /// are not counted. Always 0 for the other formats.
+    pub hidden_columns_left_out: u32,
     /// The comments the document carries, read as structured data (author,
     /// date, text, anchor text, replies, resolved state; see
     /// [`model::Comment`]). Comments never enter the Markdown. Read from
@@ -256,6 +273,9 @@ pub fn to_markdown_bytes_with(
         page_count: 0,
         images_left_out,
         hidden_text_left_out: document.hidden_text_left_out,
+        hidden_sheets_left_out: document.hidden_sheet_content.sheets,
+        hidden_rows_left_out: document.hidden_sheet_content.rows,
+        hidden_columns_left_out: document.hidden_sheet_content.columns,
         comments_left_out: u32::try_from(document.comments.len())
             .unwrap_or(u32::MAX)
             .saturating_add(document.comments_not_extracted),
@@ -381,6 +401,7 @@ mod images_left_out_tests {
             assets: Vec::new(),
             source_images: None,
             hidden_text_left_out: 0,
+            hidden_sheet_content: Default::default(),
             comments: Vec::new(),
             comments_not_extracted: 0,
         };

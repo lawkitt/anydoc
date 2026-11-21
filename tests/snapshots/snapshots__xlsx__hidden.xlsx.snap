@@ -1,0 +1,8 @@
+---
+source: tests/snapshots.rs
+expression: output
+---
+| Client | Matter |
+| --- | --- |
+| Ada Quillfeather | Lease review |
+| Cora Penhallow | Will update |

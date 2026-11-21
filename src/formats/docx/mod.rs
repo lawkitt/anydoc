@@ -133,6 +133,7 @@ pub fn parse(bytes: &[u8]) -> Result<Document, ConvertError> {
         assets,
         source_images: Some(images.get()),
         hidden_text_left_out,
+        hidden_sheet_content: Default::default(),
         comments,
         comments_not_extracted,
     })

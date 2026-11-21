@@ -11,6 +11,7 @@ fn doc(blocks: Vec<Block>) -> String {
         assets: Vec::new(),
         source_images: None,
         hidden_text_left_out: 0,
+        hidden_sheet_content: Default::default(),
         comments: Vec::new(),
         comments_not_extracted: 0,
     })
@@ -655,6 +656,7 @@ fn footnotes() {
         assets: Vec::new(),
         source_images: None,
         hidden_text_left_out: 0,
+        hidden_sheet_content: Default::default(),
         comments: Vec::new(),
         comments_not_extracted: 0,
     });
@@ -678,6 +680,7 @@ fn empty_and_unreferenced_notes() {
         assets: Vec::new(),
         source_images: None,
         hidden_text_left_out: 0,
+        hidden_sheet_content: Default::default(),
         comments: Vec::new(),
         comments_not_extracted: 0,
     });
@@ -695,6 +698,7 @@ fn duplicate_note_ids_render_one_definition() {
         assets: Vec::new(),
         source_images: None,
         hidden_text_left_out: 0,
+        hidden_sheet_content: Default::default(),
         comments: Vec::new(),
         comments_not_extracted: 0,
     });
@@ -712,6 +716,7 @@ fn blank_duplicate_note_does_not_suppress_a_later_definition() {
         assets: Vec::new(),
         source_images: None,
         hidden_text_left_out: 0,
+        hidden_sheet_content: Default::default(),
         comments: Vec::new(),
         comments_not_extracted: 0,
     });

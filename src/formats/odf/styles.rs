@@ -119,6 +119,17 @@ impl<'a> OdfStyles<'a> {
         }
     }
 
+    /// Whether a table style hides its sheet: a spreadsheet's hidden sheet
+    /// is a table whose style sets `table:display="false"`.
+    pub fn hides_table(&self, name: &str) -> bool {
+        self.raw.get(&key("table", name)).is_some_and(|(style, _)| {
+            style
+                .find(ns::STYLE, "table-properties")
+                .and_then(|props| props.attr(ns::TABLE, "display"))
+                == Some("false")
+        })
+    }
+
     /// Cumulative delta of a style through its `parent-style-name` chain,
     /// over the family's `style:default-style` base.
     pub fn delta(&self, family: &str, name: &str) -> Result<StyleDelta, ConvertError> {

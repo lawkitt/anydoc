@@ -50,6 +50,10 @@ pub struct Document {
     /// spans; hidden whitespace alone is not counted. 0 from the formats
     /// that have no hidden text.
     pub hidden_text_left_out: u32,
+    /// Spreadsheet content the source hides and the frontend left out:
+    /// hidden worksheets, and hidden rows and columns holding a value. 0
+    /// from the formats that are not spreadsheets.
+    pub hidden_sheet_content: HiddenSheetContent,
     /// The comments the frontend read as structured data, in document order
     /// of the comments part (DOCX `word/comments.xml`), of the annotations
     /// (ODT) or of the annotation groups (RTF). They never reach the blocks.
@@ -60,6 +64,23 @@ pub struct Document {
     /// XLSX, ODS, ODP), and those past the per-document cap of the formats
     /// that read them. 0 when every comment was read, or there are none.
     pub comments_not_extracted: u32,
+}
+
+/// Spreadsheet content left out because the source hides it (XLSX, XLSB,
+/// XLS, ODS). None of it reaches the blocks.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct HiddenSheetContent {
+    /// Hidden worksheets: hidden and very hidden ones alike, counted whether
+    /// or not they hold anything, since telling would mean reading them.
+    /// Hidden chart and macro sheets are not counted.
+    pub sheets: u32,
+    /// Hidden rows of the visible worksheets that hold a value (a cell with
+    /// text or a checkbox), in any column. Empty hidden rows, often whole
+    /// runs of them, are not counted.
+    pub rows: u32,
+    /// Hidden columns of the visible worksheets that hold a value, in any
+    /// row. Empty hidden columns are not counted.
+    pub columns: u32,
 }
 
 /// Footnote or endnote body, referenced from text by [`Inline::NoteRef`].

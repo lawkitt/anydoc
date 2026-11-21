@@ -7,7 +7,9 @@ use super::controls::{Checkboxes, cell_inlines, read_vml_checkboxes};
 use super::numfmt::{DateParts, NumberFormat, Rendered, builtin_code};
 use super::{format_duration_days, format_float, format_time_of_day};
 use crate::error::ConvertError;
-use crate::model::{Block, Cell, Document, GridBuilder, Inline, Table, TableKind};
+use crate::model::{
+    Block, Cell, Document, GridBuilder, HiddenSheetContent, Inline, Table, TableKind,
+};
 use crate::package::limits;
 use crate::package::relationships::{Relationships, read_rels, rel_type, rels_part_for};
 use crate::package::xml::{Element, ns};
@@ -47,7 +49,8 @@ pub(super) fn parse(pkg: &mut Package, wb_part: &str) -> Result<Document, Conver
         Styles::read(sibling_part(pkg, &wb_rels, wb_part, rel_type::STYLES, "styles.xml")?);
 
     // Visible sheets in workbook order; hidden and veryHidden sheets are
-    // omitted entirely, heading included.
+    // omitted entirely, heading included, and counted.
+    let mut doc = Document::default();
     let mut sheets: Vec<(String, String)> = Vec::new();
     for sheet in workbook
         .first_descendant(ns::SML, "sheets")
@@ -55,6 +58,13 @@ pub(super) fn parse(pkg: &mut Package, wb_part: &str) -> Result<Document, Conver
         .flat_map(|s| s.find_all(ns::SML, "sheet"))
     {
         if matches!(sheet.attr_unqualified("state"), Some("hidden" | "veryHidden")) {
+            if sheet
+                .attr_qualified(ns::R, "id")
+                .and_then(|rid| wb_rels.get(rid))
+                .is_some_and(|rel| is_worksheet_rel(&rel.rel_type))
+            {
+                doc.hidden_sheet_content.sheets += 1;
+            }
             continue;
         }
         let name = sheet.attr_unqualified("name").unwrap_or_default().to_string();
@@ -71,7 +81,6 @@ pub(super) fn parse(pkg: &mut Package, wb_part: &str) -> Result<Document, Conver
     }
 
     let multi_sheet = sheets.len() > 1;
-    let mut doc = Document::default();
     let mut failed = 0usize;
     // One budget for the workbook, so sheets cannot multiply the cap.
     let mut slots = 0u64;
@@ -84,7 +93,7 @@ pub(super) fn parse(pkg: &mut Package, wb_part: &str) -> Result<Document, Conver
         };
         let mut content = read_sheet(worksheet, &shared, &styles, date1904);
         content.checkboxes = read_vml_checkboxes(pkg, part)?;
-        let Some(table) = build_table(content, &mut slots)? else {
+        let Some(table) = build_table(content, &mut slots, &mut doc.hidden_sheet_content)? else {
             continue;
         };
         if multi_sheet {
@@ -98,6 +107,13 @@ pub(super) fn parse(pkg: &mut Package, wb_part: &str) -> Result<Document, Conver
     // Read last, so comment parts never take the archive budget from sheets.
     doc.comments_not_extracted = super::comments::count(pkg, &sheets);
     Ok(doc)
+}
+
+/// Whether a workbook relationship type names a worksheet, in the
+/// transitional or the strict namespace, as opposed to a chart, dialog or
+/// macro sheet.
+pub(super) fn is_worksheet_rel(rel_type: &str) -> bool {
+    rel_type.ends_with("/relationships/worksheet")
 }
 
 /// Part name for a workbook-level sibling: the relationship of the given
@@ -389,10 +405,12 @@ pub(super) fn format_as_text(fmt: &CellFormat, text: &str) -> String {
 /// Materialize a sheet's grid: visibility filtering, the populated extent
 /// widened to cover intersecting merge regions (a merge anchored on the
 /// only populated cell must survive at full size), and merges remapped onto
-/// the surviving rows and columns.
+/// the surviving rows and columns. The hidden rows and columns whose values
+/// are left out are added to `hidden`.
 pub(super) fn build_table(
     mut sheet: SheetContent,
     slots: &mut u64,
+    hidden: &mut HiddenSheetContent,
 ) -> Result<Option<Table>, ConvertError> {
     // Hidden coordinates as sorted lists: lookups and first-visible scans
     // stay logarithmic, so an adversarial pile of hidden rows or column
@@ -433,6 +451,21 @@ pub(super) fn build_table(
         }
         true
     });
+    // What is still in a hidden row or column now is left out: count each
+    // such row and column once. A value relocated by a merge is shown, so
+    // it is not counted.
+    let mut left_out_rows: Vec<u32> = Vec::new();
+    let mut left_out_cols: Vec<u32> = Vec::new();
+    for &(r, c) in cells.keys() {
+        if hidden_row(r) {
+            left_out_rows.push(r);
+        }
+        if hidden_col(c) {
+            left_out_cols.push(c);
+        }
+    }
+    hidden.rows = hidden.rows.saturating_add(distinct(left_out_rows));
+    hidden.columns = hidden.columns.saturating_add(distinct(left_out_cols));
 
     // Populated extent over visible cells only.
     let mut bounds: Option<(u32, u32, u32, u32)> = None;
@@ -564,6 +597,13 @@ pub(super) fn build_table(
     }
     table.header_rows = resolve_header_rows(&table, 0);
     Ok(Some(table))
+}
+
+/// How many distinct coordinates `list` holds.
+fn distinct(mut list: Vec<u32>) -> u32 {
+    list.sort_unstable();
+    list.dedup();
+    u32::try_from(list.len()).unwrap_or(u32::MAX)
 }
 
 /// The coordinates of `map` (sorted) that are in `used`, plus the first
@@ -1005,6 +1045,46 @@ mod tests {
         let doc = parse(&wb.build()).unwrap();
         assert_eq!(doc.blocks.len(), 1, "hidden sheet must add no heading and no table");
         assert_eq!(texts(first_table(&doc)), vec![vec!["a", "c"], vec!["d", ""]]);
+        // Counted, so the reader is told the workbook holds more.
+        assert_eq!(
+            doc.hidden_sheet_content,
+            crate::model::HiddenSheetContent { sheets: 1, rows: 1, columns: 1 }
+        );
+    }
+
+    #[test]
+    fn empty_hidden_rows_and_columns_are_not_counted() {
+        // Every column past the data hidden at once, an empty hidden row,
+        // and a value in a cell both hidden row and hidden column, which
+        // counts toward both.
+        let wb = one_sheet(
+            r#"<cols><col min="3" max="16384" hidden="1"/></cols><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>a</t></is></c></row><row r="2" hidden="1"/><row r="3" hidden="1"><c r="D3" t="inlineStr"><is><t>both</t></is></c></row><row r="4"><c r="B4" t="inlineStr"><is><t>b</t></is></c></row></sheetData>"#,
+        );
+        let doc = parse(&wb.build()).unwrap();
+        assert_eq!(texts(first_table(&doc)), vec![vec!["a", ""], vec!["", "b"]]);
+        assert_eq!(
+            doc.hidden_sheet_content,
+            crate::model::HiddenSheetContent { sheets: 0, rows: 1, columns: 1 }
+        );
+    }
+
+    #[test]
+    fn very_hidden_sheets_count_like_hidden_ones() {
+        let empty = "<sheetData/>";
+        let wb = Wb {
+            sheets: vec![
+                (
+                    "Shown",
+                    "",
+                    r#"<sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>a</t></is></c></row></sheetData>"#,
+                ),
+                ("Hidden", "hidden", empty),
+                ("VeryHidden", "veryHidden", empty),
+            ],
+            ..Wb::default()
+        };
+        let doc = parse(&wb.build()).unwrap();
+        assert_eq!(doc.hidden_sheet_content.sheets, 2);
     }
 
     #[test]
@@ -1037,6 +1117,8 @@ mod tests {
         };
         assert_eq!(cell.row_span, 2);
         assert_eq!(texts(table)[0][0], "kept");
+        // The value is shown, so nothing hidden is left out.
+        assert_eq!(doc.hidden_sheet_content, crate::model::HiddenSheetContent::default());
     }
 
     /// A sheet of inline-string cells at the given zero-based positions.

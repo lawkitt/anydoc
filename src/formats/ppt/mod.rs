@@ -54,6 +54,7 @@ pub fn parse(bytes: &[u8]) -> Result<Document, ConvertError> {
         assets,
         source_images: None,
         hidden_text_left_out: 0,
+        hidden_sheet_content: Default::default(),
         comments: Vec::new(),
         comments_not_extracted: 0,
     })

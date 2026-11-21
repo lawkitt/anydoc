@@ -49,6 +49,9 @@ pub fn to_markdown(bytes: &[u8], ocr: Ocr) -> Result<Conversion, ConvertError> {
                 page_count: result.page_count,
                 images_left_out: 0,
                 hidden_text_left_out: 0,
+                hidden_sheets_left_out: 0,
+                hidden_rows_left_out: 0,
+                hidden_columns_left_out: 0,
                 comments: Vec::new(),
                 comments_left_out: 0,
             })
@@ -113,6 +116,9 @@ fn skip_pages_needing_ocr(
         page_count,
         images_left_out: 0,
         hidden_text_left_out: 0,
+        hidden_sheets_left_out: 0,
+        hidden_rows_left_out: 0,
+        hidden_columns_left_out: 0,
         comments: Vec::new(),
         comments_left_out: 0,
     })
