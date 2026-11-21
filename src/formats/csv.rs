@@ -2,9 +2,8 @@
 //!
 //! Field content is preserved as written (RFC 4180: spaces are part of the
 //! field); only control characters are cleaned. Encoding is detected from
-//! the BOM (UTF-8, UTF-16LE/BE), then UTF-8, then Mozilla's `chardetng`
-//! (Windows-1251, KOI8-R, Windows-1252 and the other legacy encodings a
-//! spreadsheet exports in), whose fallback is Windows-1252. The
+//! the BOM (UTF-8, UTF-16LE/BE), then UTF-8, then Mozilla's `chardetng` for
+//! the Cyrillic legacy encodings (Windows-1251, KOI8-R), then Windows-1252. The
 //! delimiter is chosen by trial-parsing candidates and scoring record
 //! consistency, so delimiters inside quoted fields don't skew the choice. The
 //! format marks no header row, so the shape of the data decides whether the
@@ -64,10 +63,7 @@ fn decode(bytes: &[u8]) -> Cow<'_, str> {
             let bytes = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes);
             match std::str::from_utf8(bytes) {
                 Ok(s) => Cow::Borrowed(s),
-                Err(_) => {
-                    let (s, _) = guess_legacy(bytes).decode_without_bom_handling(bytes);
-                    Cow::Owned(s.into_owned())
-                }
+                Err(_) => Cow::Owned(decode_legacy(bytes)),
             }
         }
     }
@@ -78,23 +74,57 @@ fn decode(bytes: &[u8]) -> Cow<'_, str> {
 /// as well as the whole file and keeps detection cheap on a large one.
 const DETECT_PREFIX: usize = 1 << 20;
 
-/// The Cyrillic encodings `chardetng` can answer: KOI8-U is its KOI8 family
-/// (the same letters as KOI8-R), IBM866 the DOS code page.
-const CYRILLIC: [&encoding_rs::Encoding; 4] =
-    [encoding_rs::WINDOWS_1251, encoding_rs::KOI8_U, encoding_rs::ISO_8859_5, encoding_rs::IBM866];
+/// The Cyrillic answers of `chardetng` that are taken: Windows-1251 and its
+/// KOI8 family, KOI8-U (the same letters as KOI8-R). Both keep Russian's
+/// letters, but for `Ё` and `ё`, out of 0x80–0xBF, where Windows-1252 has its
+/// dashes, quotes and ellipses, so those can't read as a Russian word. IBM866
+/// and ISO-8859-5 put Russian capitals there (`––` becomes `ЦЦ`) and are rare
+/// in spreadsheets.
+const CYRILLIC: [&encoding_rs::Encoding; 2] = [encoding_rs::WINDOWS_1251, encoding_rs::KOI8_U];
 
-/// The legacy encoding of input that isn't UTF-8 and has no BOM: a Cyrillic
-/// encoding when `chardetng` finds one, else Windows-1252, the encoding this
-/// format assumed before it had a detector. Its other answers aren't taken:
-/// on a short Western CSV whose only non-ASCII is a symbol or two it guesses
-/// Central European, Baltic or Big5 (`£8` becomes `Ł8`, `naïve` `naīve`).
-fn guess_legacy(bytes: &[u8]) -> &'static encoding_rs::Encoding {
+/// Input that isn't UTF-8 and has no BOM, in a Cyrillic encoding when
+/// `chardetng` finds one and the text bears it out, else in Windows-1252, the
+/// encoding this format assumed before it had a detector.
+///
+/// The detector's other answers aren't taken: on a short Western CSV whose
+/// only non-ASCII is a symbol or two it guesses Central European, Baltic or
+/// Big5 (`£8` becomes `Ł8`, `naïve` `naīve`). Nor is a Cyrillic answer
+/// without a Russian word: a Western CSV whose only non-ASCII is a run of
+/// one character can read as a run of one Cyrillic letter (`ßß` as `ЯЯ`).
+fn decode_legacy(bytes: &[u8]) -> String {
     use chardetng::{EncodingDetector, Iso2022JpDetection, Utf8Detection};
     let prefix = &bytes[..bytes.len().min(DETECT_PREFIX)];
     let mut detector = EncodingDetector::new(Iso2022JpDetection::Deny);
     detector.feed(prefix, prefix.len() == bytes.len());
     let guess = detector.guess(None, Utf8Detection::Deny);
-    if CYRILLIC.contains(&guess) { guess } else { encoding_rs::WINDOWS_1252 }
+    if CYRILLIC.contains(&guess) {
+        let (text, _) = guess.decode_without_bom_handling(bytes);
+        if has_russian_word(&text) {
+            return text.into_owned();
+        }
+    }
+    encoding_rs::WINDOWS_1252.decode_without_bom_handling(bytes).0.into_owned()
+}
+
+/// Whether `text` has a word of three or more different Russian letters in
+/// a row, as any Russian text does (`ФИО`, `Нет`). A run of one symbol
+/// misread as Cyrillic doesn't, nor do Western symbols misread as the
+/// Windows-1251 letters outside Russian's alphabet (`€` as `Ђ`, `¿` as `ї`).
+fn has_russian_word(text: &str) -> bool {
+    let mut letters = ['\0'; 3];
+    let mut distinct = 0;
+    for c in text.chars() {
+        if !matches!(c, 'А'..='я' | 'Ё' | 'ё') {
+            distinct = 0;
+        } else if !letters[..distinct].contains(&c) {
+            letters[distinct] = c;
+            distinct += 1;
+            if distinct == letters.len() {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Trial-parse each candidate over the leading records and score by field
@@ -193,7 +223,7 @@ mod tests {
             "Наименование;Количество;Цена\nКарандаш чёрный;12;35,50\n",
         ];
         for text in samples {
-            for encoding in [encoding_rs::WINDOWS_1251, encoding_rs::KOI8_R, encoding_rs::IBM866] {
+            for encoding in [encoding_rs::WINDOWS_1251, encoding_rs::KOI8_R] {
                 assert_eq!(decode(&legacy(text, encoding)), text, "{}", encoding.name());
             }
         }
@@ -243,6 +273,40 @@ mod tests {
         for text in samples {
             assert_eq!(decode(&legacy(text, encoding_rs::WINDOWS_1252)), text);
         }
+    }
+
+    /// A run of one Windows-1252 character as a CSV's only non-ASCII: the
+    /// detector reads most such runs as Cyrillic capitals.
+    #[test]
+    fn a_run_of_one_symbol_stays_windows_1252() {
+        for byte in 0x80..=0xFFu8 {
+            let input = [byte];
+            let (c, malformed) = encoding_rs::WINDOWS_1252.decode_without_bom_handling(&input);
+            if malformed {
+                continue;
+            }
+            for len in 2..=4 {
+                let run = c.repeat(len);
+                for text in [format!("x\n{run}\n"), format!("name,note\nSmith,{run}\nJones,ok\n")] {
+                    assert_eq!(
+                        decode(&legacy(&text, encoding_rs::WINDOWS_1252)),
+                        text,
+                        "{byte:#x}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn russian_word_needs_three_different_letters() {
+        assert!(has_russian_word("x,ФИО\n"));
+        assert!(has_russian_word("Нет"));
+        assert!(has_russian_word("ааабв"));
+        assert!(!has_russian_word("x,ЦЦЦЦ\n"));
+        assert!(!has_russian_word("Да,Ок"));
+        assert!(!has_russian_word("Аb Бc Вd"));
+        assert!(!has_russian_word("plain ascii"));
     }
 
     #[test]
