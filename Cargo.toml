@@ -29,6 +29,8 @@ sha2 = "0.11"
 
 [dependencies]
 cfb = "0.14.0"
+# Legacy encoding detection for CSV that isn't UTF-8 (Windows-1251, KOI8-R).
+chardetng = "1.0.0"
 csv = "1.4.0"
 flate2 = "1"
 encoding_rs = "0.8.35"
