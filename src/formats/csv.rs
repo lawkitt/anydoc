@@ -69,10 +69,22 @@ fn decode(bytes: &[u8]) -> Cow<'_, str> {
     }
 }
 
-/// How much of a non-UTF-8 input the detector reads. A spreadsheet export
-/// repeats its encoding's letters from the first rows on, so a prefix decides
-/// as well as the whole file and keeps detection cheap on a large one.
-const DETECT_PREFIX: usize = 1 << 20;
+/// How much of a non-UTF-8 input the detector reads, from the line of its
+/// first non-ASCII byte. A spreadsheet export repeats its encoding's letters
+/// row after row, so a window decides as well as the whole file, and the
+/// detector's cost stays flat however large the file (reading 1 MiB added
+/// 6% to converting a 5 MB Windows-1252 CSV). Starting at the first
+/// non-ASCII line, not the file's start, keeps a file whose letters begin
+/// after many ASCII rows from reading as Windows-1252.
+const DETECT_WINDOW: usize = 64 * 1024;
+
+/// The bytes the detector reads: [`DETECT_WINDOW`] of them from the start of
+/// the line holding the first non-ASCII byte.
+fn detection_window(bytes: &[u8]) -> &[u8] {
+    let first = bytes.iter().position(|b| !b.is_ascii()).unwrap_or(0);
+    let start = bytes[..first].iter().rposition(|&b| b == b'\n').map_or(0, |i| i + 1);
+    &bytes[start..bytes.len().min(start + DETECT_WINDOW)]
+}
 
 /// The Cyrillic answers of `chardetng` that are taken: Windows-1251 and its
 /// KOI8 family, KOI8-U (the same letters as KOI8-R). Both keep Russian's
@@ -93,9 +105,11 @@ const CYRILLIC: [&encoding_rs::Encoding; 2] = [encoding_rs::WINDOWS_1251, encodi
 /// one character can read as a run of one Cyrillic letter (`ßß` as `ЯЯ`).
 fn decode_legacy(bytes: &[u8]) -> String {
     use chardetng::{EncodingDetector, Iso2022JpDetection, Utf8Detection};
-    let prefix = &bytes[..bytes.len().min(DETECT_PREFIX)];
+    let window = detection_window(bytes);
     let mut detector = EncodingDetector::new(Iso2022JpDetection::Deny);
-    detector.feed(prefix, prefix.len() == bytes.len());
+    // The stream ends with the window only when the window reaches the end.
+    let last = window.as_ptr_range().end == bytes.as_ptr_range().end;
+    detector.feed(window, last);
     let guess = detector.guess(None, Utf8Detection::Deny);
     if CYRILLIC.contains(&guess) {
         let (text, _) = guess.decode_without_bom_handling(bytes);
@@ -310,12 +324,33 @@ mod tests {
     }
 
     #[test]
-    fn detection_reads_a_prefix_of_a_large_input() {
+    fn detection_reads_a_window_of_a_large_input() {
         let row = "Кудрявцев Олег Петрович;Санкт-Петербург;инженер\n";
-        let text = row.repeat(DETECT_PREFIX / row.len() * 2);
-        let bytes = legacy(&text, encoding_rs::WINDOWS_1251);
-        assert!(bytes.len() > DETECT_PREFIX);
-        assert_eq!(decode(&bytes), text);
+        let text = row.repeat(DETECT_WINDOW / row.len() * 4);
+        for encoding in [encoding_rs::WINDOWS_1251, encoding_rs::KOI8_R] {
+            let bytes = legacy(&text, encoding);
+            assert!(bytes.len() > DETECT_WINDOW);
+            assert_eq!(detection_window(&bytes).len(), DETECT_WINDOW);
+            assert_eq!(decode(&bytes), text, "{}", encoding.name());
+        }
+    }
+
+    /// Letters that begin after more ASCII rows than the window holds still
+    /// decide the encoding, and the window starts at their line.
+    #[test]
+    fn detection_starts_at_the_first_non_ascii_line() {
+        let ascii =
+            "id;code;amount\n".to_owned() + &"1042;A-17;1250.00\n".repeat(DETECT_WINDOW / 10);
+        for (row, encoding) in [
+            ("1043;Белозёрова Анна Викторовна;980,50\n", encoding_rs::WINDOWS_1251),
+            ("1043;Белозёрова Анна Викторовна;980,50\n", encoding_rs::KOI8_R),
+            ("1043;Jürgen Weißmüller;980,50 €\n", encoding_rs::WINDOWS_1252),
+        ] {
+            let text = format!("{ascii}{row}");
+            let bytes = legacy(&text, encoding);
+            assert!(detection_window(&bytes).starts_with(b"1043;"));
+            assert_eq!(decode(&bytes), text, "{}", encoding.name());
+        }
     }
 
     #[test]
