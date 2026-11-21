@@ -147,6 +147,7 @@ pub fn parse(bytes: &[u8]) -> Result<Document, ConvertError> {
         assets,
         source_images: None,
         hidden_text_left_out,
+        hidden_sheet_content: Default::default(),
         comments: Vec::new(),
         comments_not_extracted: annotation_count(&word_doc, &table, ccp_atn),
     })

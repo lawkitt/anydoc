@@ -62,6 +62,11 @@ pub(super) fn parse(bytes: &[u8]) -> Result<Document, ConvertError> {
     let visible: Vec<&BoundSheet> = globals.sheets.iter().filter(|s| s.visible).collect();
     let multi_sheet = visible.len() > 1;
     let mut doc = Document::default();
+    // Hidden worksheets are omitted entirely, heading included, and
+    // counted; hidden chart and macro sheets are not counted, as in xlsx.
+    let hidden_sheets =
+        globals.sheets.iter().filter(|s| !s.visible && s.kind == SHEET_KIND_WORKSHEET).count();
+    doc.hidden_sheet_content.sheets = u32::try_from(hidden_sheets).unwrap_or(u32::MAX);
     let mut failed = 0usize;
     // One budget for the workbook, so sheets cannot multiply the cap.
     let mut slots = 0u64;
@@ -71,7 +76,7 @@ pub(super) fn parse(bytes: &[u8]) -> Result<Document, ConvertError> {
             failed += 1;
             continue;
         };
-        let Some(table) = build_table(content, &mut slots)? else {
+        let Some(table) = build_table(content, &mut slots, &mut doc.hidden_sheet_content)? else {
             continue;
         };
         if multi_sheet {
@@ -324,7 +329,12 @@ struct BoundSheet {
     /// Absolute stream offset of the sheet substream's BOF record.
     offset: usize,
     visible: bool,
+    /// BOUNDSHEET `dt`: worksheet (or dialog sheet), macro sheet or chart.
+    kind: u8,
 }
+
+/// BOUNDSHEET `dt` value for a worksheet or dialog sheet.
+const SHEET_KIND_WORKSHEET: u8 = 0x00;
 
 struct Globals {
     biff8: bool,
@@ -440,12 +450,13 @@ fn read_globals(data: &[u8], records: &mut u64) -> Result<Globals, ConvertError>
 fn read_boundsheet(body: &[u8], globals: &Globals) -> Option<BoundSheet> {
     let offset = get_u32(body, 0)? as usize;
     let state = body.get(4)? & 0x03;
-    if *body.get(5)? == 0x06 {
+    let kind = *body.get(5)?;
+    if kind == 0x06 {
         return None;
     }
     let mut r = SegReader::new(vec![body.get(6..)?]);
     let name = globals.read_string(&mut r, true)?;
-    Some(BoundSheet { name: clean_text(&name), offset, visible: state == 0 })
+    Some(BoundSheet { name: clean_text(&name), offset, visible: state == 0, kind })
 }
 
 /// The shared string table (trap 1: strings routinely split across
@@ -1141,6 +1152,10 @@ mod tests {
         let doc = parse(&wb.build()).unwrap();
         assert_eq!(doc.blocks.len(), 1, "hidden sheet must add no heading and no table");
         assert_eq!(texts(first_table(&doc)), vec![vec!["a", "c"], vec!["d", ""]]);
+        assert_eq!(
+            doc.hidden_sheet_content,
+            crate::model::HiddenSheetContent { sheets: 1, rows: 1, columns: 1 }
+        );
     }
 
     #[test]

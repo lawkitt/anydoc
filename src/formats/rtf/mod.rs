@@ -1505,6 +1505,7 @@ impl<'a> Parser<'a> {
             assets: self.assets.assets,
             source_images: None,
             hidden_text_left_out: self.hidden.count(),
+            hidden_sheet_content: Default::default(),
             comments,
             comments_not_extracted,
         })

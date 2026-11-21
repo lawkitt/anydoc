@@ -7,7 +7,7 @@
 use super::controls::read_vml_checkboxes;
 use super::xlsx::{
     CellFormat, MAX_COLS, MAX_ROWS, SHARED_STRINGS_REL, SheetContent, build_table, format_as_text,
-    render_number, resolve_format, sibling_part_name,
+    is_worksheet_rel, render_number, resolve_format, sibling_part_name,
 };
 use super::{error_literal, rk_number};
 use crate::error::ConvertError;
@@ -44,7 +44,7 @@ const BRT_END_CELL_XFS: u16 = 618;
 
 pub(super) fn parse(pkg: &mut Package, wb_part: &str) -> Result<Document, ConvertError> {
     let workbook = pkg.required_part(wb_part)?;
-    let (date1904, bundles) = read_workbook(&workbook)?;
+    let (date1904, bundles, hidden_rids) = read_workbook(&workbook)?;
     let wb_rels = read_rels(pkg, &rels_part_for(wb_part))?;
 
     let shared = read_optional(
@@ -74,6 +74,14 @@ pub(super) fn parse(pkg: &mut Package, wb_part: &str) -> Result<Document, Conver
 
     let multi_sheet = sheets.len() > 1;
     let mut doc = Document::default();
+    // Hidden sheets are counted when their relationship names a worksheet,
+    // exactly as in xlsx.
+    let hidden_sheets = hidden_rids
+        .iter()
+        .filter_map(|rid| wb_rels.get(rid))
+        .filter(|rel| is_worksheet_rel(&rel.rel_type))
+        .count();
+    doc.hidden_sheet_content.sheets = u32::try_from(hidden_sheets).unwrap_or(u32::MAX);
     let mut failed = 0usize;
     // One budget for the workbook, so sheets cannot multiply the cap.
     let mut slots = 0u64;
@@ -95,7 +103,7 @@ pub(super) fn parse(pkg: &mut Package, wb_part: &str) -> Result<Document, Conver
             }
         };
         content.checkboxes = read_vml_checkboxes(pkg, part)?;
-        let Some(table) = build_table(content, &mut slots)? else {
+        let Some(table) = build_table(content, &mut slots, &mut doc.hidden_sheet_content)? else {
             continue;
         };
         if multi_sheet {
@@ -130,11 +138,14 @@ fn read_optional<T: Default>(
     }
 }
 
-/// `xl/workbook.bin`: the 1904 date flag from BrtWbProp, and each visible
-/// sheet's name and relationship id from its BrtBundleSh.
-fn read_workbook(data: &[u8]) -> Result<(bool, Vec<(String, String)>), ConvertError> {
+/// `xl/workbook.bin`: the 1904 date flag from BrtWbProp, each visible
+/// sheet's name and relationship id from its BrtBundleSh, and the hidden
+/// sheets' relationship ids.
+type Workbook = (bool, Vec<(String, String)>, Vec<String>);
+fn read_workbook(data: &[u8]) -> Result<Workbook, ConvertError> {
     let mut date1904 = false;
     let mut sheets = Vec::new();
+    let mut hidden = Vec::new();
     let mut records = Records::new(data);
     while let Some((id, payload)) = records.next()? {
         match id {
@@ -146,8 +157,9 @@ fn read_workbook(data: &[u8]) -> Result<(bool, Vec<(String, String)>), ConvertEr
                 let rid = f.nullable_wide_string()?;
                 let name = clean_text(&f.wide_string()?);
                 // hsState 1 is hidden, 2 is veryHidden: omitted entirely,
-                // heading included, exactly as in xlsx.
+                // heading included, and counted, exactly as in xlsx.
                 if state == 1 || state == 2 {
+                    hidden.extend(rid);
                     continue;
                 }
                 match rid {
@@ -158,7 +170,7 @@ fn read_workbook(data: &[u8]) -> Result<(bool, Vec<(String, String)>), ConvertEr
             _ => {}
         }
     }
-    Ok((date1904, sheets))
+    Ok((date1904, sheets, hidden))
 }
 
 /// `styles.bin` reduced to the ordered cellXfs list, each entry's format id
@@ -823,6 +835,10 @@ mod tests {
         let doc = parse(&wb.build()).unwrap();
         assert_eq!(doc.blocks.len(), 1, "hidden sheets must add no heading and no table");
         assert_eq!(texts(first_table(&doc)), vec![vec!["1", "3"], vec!["5", ""]]);
+        assert_eq!(
+            doc.hidden_sheet_content,
+            crate::model::HiddenSheetContent { sheets: 2, rows: 1, columns: 1 }
+        );
     }
 
     #[test]

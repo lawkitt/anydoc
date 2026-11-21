@@ -6,7 +6,7 @@ mod table;
 mod text;
 
 use crate::error::ConvertError;
-use crate::model::{Block, Document, Inline, inlines_are_empty};
+use crate::model::{Block, Document, HiddenSheetContent, Inline, inlines_are_empty};
 use crate::package::Package;
 use crate::package::xml::{Element, ns};
 use crate::shared::assets::AssetSink;
@@ -39,10 +39,13 @@ pub fn parse(bytes: &[u8]) -> Result<Document, ConvertError> {
     let assets = RefCell::new(AssetSink::new());
     let ctx = Ctx::new(&styles, &pkg, &assets);
 
+    let mut hidden_sheet_content = HiddenSheetContent::default();
     let blocks = if let Some(text) = body.find(ns::OFFICE, "text") {
         parse_container(text, &ctx)?
     } else if let Some(sheet) = body.find(ns::OFFICE, "spreadsheet") {
-        table::parse_spreadsheet(sheet, &ctx)?
+        let (blocks, hidden) = table::parse_spreadsheet(sheet, &ctx)?;
+        hidden_sheet_content = hidden;
+        blocks
     } else if let Some(pres) = body.find(ns::OFFICE, "presentation") {
         parse_presentation(pres, &ctx)?
     } else {
@@ -66,6 +69,7 @@ pub fn parse(bytes: &[u8]) -> Result<Document, ConvertError> {
         assets,
         source_images: None,
         hidden_text_left_out: 0,
+        hidden_sheet_content,
         comments,
         comments_not_extracted,
     })

@@ -1232,6 +1232,49 @@ def sheet_xlsb():
     ])
 
 
+def hidden_xlsb():
+    """The XLSB twin of tests/fixture-src/hidden.fods, which LibreOffice
+    cannot write: a visible sheet "Matters" with column B and row 3 hidden,
+    and a hidden sheet "Client contacts". Every name that must stay out of
+    the Markdown is spelled HIDDEN-*."""
+    root_rels = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.bin"/>
+</Relationships>"""
+    wb_rels = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.bin"/>
+<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.bin"/>
+</Relationships>"""
+    workbook = (
+        xlsb_rec(153, struct.pack("<II", 0, 0) + xlsb_str(""))  # BrtWbProp, 1900 dates
+        + xlsb_rec(156, struct.pack("<II", 0, 1) + xlsb_str("rId1") + xlsb_str("Matters"))
+        + xlsb_rec(156, struct.pack("<II", 1, 2) + xlsb_str("rId2") + xlsb_str("Client contacts"))
+    )
+    st = lambda col, s: xlsb_rec(6, xlsb_cell(col) + xlsb_str(s))
+    rows = [
+        ("Client", "HIDDEN-Referred by", "Matter"),
+        ("Ada Quillfeather", "HIDDEN-Hugo Brannock", "Lease review"),
+        ("HIDDEN-Bram Tolliver", "HIDDEN-Ines Calloway", "HIDDEN-Settlement draft"),
+        ("Cora Penhallow", "HIDDEN-Jory Abernethy", "Will update"),
+    ]
+    matters = xlsb_rec(60, struct.pack("<IIIIH", 1, 1, 0, 0, 1))  # column B hidden
+    for r, cells in enumerate(rows):
+        matters += xlsb_row(r, hidden=(r == 2))
+        matters += b"".join(st(c, text) for c, text in enumerate(cells))
+    contacts = (
+        xlsb_row(0) + st(0, "HIDDEN-Dorian Vale") + st(1, "HIDDEN-555 0101")
+        + xlsb_row(1) + st(0, "HIDDEN-Elspeth Marrow") + st(1, "HIDDEN-555 0102")
+    )
+    write_zip(OUT / "xlsb" / "handmade-hidden.xlsb", [
+        ("_rels/.rels", root_rels),
+        ("xl/workbook.bin", workbook),
+        ("xl/_rels/workbook.bin.rels", wb_rels),
+        ("xl/worksheets/sheet1.bin", matters),
+        ("xl/worksheets/sheet2.bin", contacts),
+    ])
+
+
 # ---------------------------------------------------------------------------
 # R16: ODF style:default-style beneath named chains; full ISO durations
 
@@ -2862,6 +2905,10 @@ def main():
         convert_lo(sheet, "xlsx:Calc MS Excel 2007 XML", OUT / "xlsx", "sheet.xlsx")
         convert_lo(sheet, "xls:MS Excel 97", OUT / "xls", "sheet.xls")
         convert_lo(sheet, "csv:Text - txt - csv (StarCalc)", OUT / "csv", "sheet.csv")
+        hidden = SRC / "hidden.fods"
+        convert_lo(hidden, "ods", OUT / "ods", "hidden.ods")
+        convert_lo(hidden, "xlsx:Calc MS Excel 2007 XML", OUT / "xlsx", "hidden.xlsx")
+        convert_lo(hidden, "xls:MS Excel 97", OUT / "xls", "hidden.xls")
         pres = SRC / "pres.fodp"
         convert_lo(pres, "odp", OUT / "odp", "pres.odp")
         convert_lo(pres, "pptx:Impress MS PowerPoint 2007 XML", OUT / "pptx", "pres.pptx")
@@ -2895,6 +2942,7 @@ def main():
     defaults_odf()
     merged_xlsx()
     sheet_xlsb()
+    hidden_xlsb()
     features_epub()
     bin_rtf()
     math_docx()
