@@ -1125,6 +1125,11 @@ fn collect_row_cells<'e>(parent: &'e Element, cells: &mut Vec<TcInfo<'e>>) {
         match child.local.as_str() {
             "tc" => {
                 let tcpr = child.find(ns::W, "tcPr");
+                // A cell deleted as a tracked change: accepting it takes the
+                // cell, and its text, out of the row (lawkitt/mdoc#395).
+                if tcpr.is_some_and(|p| p.find(ns::W, "cellDel").is_some()) {
+                    continue;
+                }
                 let covered = tcpr
                     .and_then(|p| p.find(ns::W, "vMerge"))
                     .is_some_and(|v| !matches!(v.attr(ns::W, "val"), Some("restart")));
