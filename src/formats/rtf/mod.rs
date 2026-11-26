@@ -1298,6 +1298,10 @@ impl<'a> Parser<'a> {
                     lt.push_str(&text);
                 }
             }
+            // A deleted revision of a field's instruction (a link's old
+            // target) is dropped as body text is: accepting it removes it
+            // (lawkitt/mdoc#373).
+            Capture::FieldInstr if self.state.deleted => {}
             Capture::FieldInstr => {
                 if let Some(f) = self.dest.fields.last_mut() {
                     f.instr.push_str(&text);
@@ -1584,6 +1588,26 @@ mod tests {
         ] {
             let markdown = crate::to_markdown_bytes(src.as_bytes(), crate::Format::Rtf).unwrap();
             assert_eq!(markdown, "The parties agreed NEWTERM terms.\n", "source: {src}");
+        }
+    }
+
+    #[test]
+    fn deleted_field_instruction_text_is_omitted() {
+        // lawkitt/mdoc#373: a link's deleted target never becomes the
+        // Markdown link; an inserted one replaces it, and a link left with
+        // no target keeps only its label.
+        for (src, expected) in [
+            (
+                r#"{\rtf1 See {\field{\*\fldinst HYPERLINK {\deleted "https://example.com/old-name"}{\revised "https://example.com/register"}}{\fldrslt the register}} here.\par}"#,
+                "See [the register](https://example.com/register) here.\n",
+            ),
+            (
+                r#"{\rtf1 See {\field{\*\fldinst {\deleted HYPERLINK "https://example.com/old-name"}}{\fldrslt the register}} here.\par}"#,
+                "See the register here.\n",
+            ),
+        ] {
+            let markdown = crate::to_markdown_bytes(src.as_bytes(), crate::Format::Rtf).unwrap();
+            assert_eq!(markdown, expected, "source: {src}");
         }
     }
 
