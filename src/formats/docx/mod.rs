@@ -13,7 +13,7 @@ use crate::error::ConvertError;
 use crate::model::{Document, Note, NoteKind};
 use crate::package::Package;
 use crate::package::relationships::{Relationships, read_rels, rel_type, rels_part_for};
-use crate::package::xml::ns;
+use crate::package::xml::{Element, ns};
 use crate::shared::assets::AssetSink;
 use content::Ctx;
 use numbering::Counters;
@@ -89,6 +89,10 @@ pub fn parse(bytes: &[u8]) -> Result<Document, ConvertError> {
         comments::walk_text(body, anchors);
     }
 
+    // The renderer also prints notes nothing references, so a note whose
+    // references all lie in deleted content goes with them
+    // (lawkitt/mdoc#395).
+    let deleted_notes = deleted_note_refs(body);
     let mut notes = Vec::new();
     for (part, root_name, elem_name, prefix, kind) in [
         (footnotes_part, "footnotes", "footnote", "fn", NoteKind::Footnote),
@@ -113,11 +117,11 @@ pub fn parse(bytes: &[u8]) -> Result<Document, ConvertError> {
                 continue;
             }
             let Some(id) = note.attr(ns::W, "id") else { continue };
-            notes.push(Note {
-                id: format!("{prefix}{id}"),
-                kind,
-                blocks: content::parse_blocks(note, &note_ctx)?,
-            });
+            let id = format!("{prefix}{id}");
+            if deleted_notes.contains(&id) {
+                continue;
+            }
+            notes.push(Note { id, kind, blocks: content::parse_blocks(note, &note_ctx)? });
         }
     }
 
@@ -137,6 +141,49 @@ pub fn parse(bytes: &[u8]) -> Result<Document, ConvertError> {
         comments,
         comments_not_extracted,
     })
+}
+
+/// The notes (`fn<id>`, `en<id>`) the body references only from deleted
+/// content: a tracked deletion (`w:del`), the old place of a move
+/// (`w:moveFrom`) or a deleted table cell (`w:cellDel`).
+fn deleted_note_refs(body: &Element) -> std::collections::HashSet<String> {
+    fn walk(
+        elem: &Element,
+        deleted: bool,
+        kept: &mut std::collections::HashSet<String>,
+        gone: &mut std::collections::HashSet<String>,
+    ) {
+        for child in elem.child_elems() {
+            let in_w = child.ns.as_deref() == Some(ns::W);
+            let deleted = deleted
+                || (in_w
+                    && match child.local.as_str() {
+                        "del" | "moveFrom" => true,
+                        "tc" => child
+                            .find(ns::W, "tcPr")
+                            .is_some_and(|p| p.find(ns::W, "cellDel").is_some()),
+                        _ => false,
+                    });
+            let prefix = match child.local.as_str() {
+                "footnoteReference" if in_w => Some("fn"),
+                "endnoteReference" if in_w => Some("en"),
+                _ => None,
+            };
+            if let (Some(prefix), Some(id)) = (prefix, child.attr(ns::W, "id")) {
+                let id = format!("{prefix}{id}");
+                if deleted {
+                    gone.insert(id)
+                } else {
+                    kept.insert(id)
+                };
+            }
+            walk(child, deleted, kept, gone);
+        }
+    }
+    let (mut kept, mut gone) = Default::default();
+    walk(body, false, &mut kept, &mut gone);
+    gone.retain(|id| !kept.contains(id));
+    gone
 }
 
 /// Path of a typed related part, resolved against the main part; falls back

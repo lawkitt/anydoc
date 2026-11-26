@@ -998,6 +998,12 @@ impl<'a> Parser<'a> {
             "clmrg" => self.pending_cell_prop(|p| p.merge_cont = true),
             "clvmgf" => self.pending_cell_prop(|p| p.vmerge_first = true),
             "clvmrg" => self.pending_cell_prop(|p| p.vmerge_cont = true),
+            "cldel" => {
+                if self.table_active() {
+                    let depth = self.state.itap.max(1);
+                    self.table.mark_deleted_cell(depth);
+                }
+            }
             "cellx" => {
                 if self.table_active() {
                     let depth = self.state.itap.max(1);
@@ -1293,6 +1299,9 @@ impl<'a> Parser<'a> {
             return;
         }
         match self.state.capture {
+            // A deleted list label is dropped as body text is
+            // (lawkitt/mdoc#373).
+            Capture::ListText if self.state.deleted => {}
             Capture::ListText => {
                 if let Some(lt) = &mut self.dest.listtext {
                     lt.push_str(&text);
@@ -1589,6 +1598,19 @@ mod tests {
             let markdown = crate::to_markdown_bytes(src.as_bytes(), crate::Format::Rtf).unwrap();
             assert_eq!(markdown, "The parties agreed NEWTERM terms.\n", "source: {src}");
         }
+    }
+
+    #[test]
+    fn a_deleted_cell_and_a_deleted_list_label_are_omitted() {
+        // lawkitt/mdoc#373: a cell deleted as a tracked change (`\cldel`)
+        // stays in its place, empty; a deleted list label is dropped.
+        let src = r"{\rtf1 \trowd\cellx3000\cldel\cellx6000\cellx9000 \pard\intbl A\cell \pard\intbl Old name\cell \pard\intbl C\cell\row \pard End.\par}";
+        let markdown = crate::to_markdown_bytes(src.as_bytes(), crate::Format::Rtf).unwrap();
+        assert!(markdown.contains("| A |  | C |"), "{markdown}");
+        assert!(!markdown.contains("Old name"), "{markdown}");
+        let src = r"{\rtf1 \pard{\listtext {\deleted Old name}\tab}Item text.\par}";
+        let markdown = crate::to_markdown_bytes(src.as_bytes(), crate::Format::Rtf).unwrap();
+        assert_eq!(markdown, "Item text.\n");
     }
 
     #[test]

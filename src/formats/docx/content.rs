@@ -945,12 +945,23 @@ struct TcInfo<'e> {
     row_span: usize,
     /// vMerge continuation: this position belongs to the origin above.
     covered: bool,
+    /// Deleted as a tracked change (`w:cellDel`): it keeps its grid
+    /// position, so merges and the columns after it stay where they are,
+    /// but none of its text (lawkitt/mdoc#395).
+    deleted: bool,
 }
 
 impl TcInfo<'_> {
     /// Empty single-column filler for `gridBefore`/`gridAfter` positions.
     fn filler() -> Self {
-        TcInfo { elem: None, merged: Vec::new(), col_span: 1, row_span: 1, covered: false }
+        TcInfo {
+            elem: None,
+            merged: Vec::new(),
+            col_span: 1,
+            row_span: 1,
+            covered: false,
+            deleted: false,
+        }
     }
 }
 
@@ -1125,11 +1136,9 @@ fn collect_row_cells<'e>(parent: &'e Element, cells: &mut Vec<TcInfo<'e>>) {
         match child.local.as_str() {
             "tc" => {
                 let tcpr = child.find(ns::W, "tcPr");
-                // A cell deleted as a tracked change: accepting it takes the
-                // cell, and its text, out of the row (lawkitt/mdoc#395).
-                if tcpr.is_some_and(|p| p.find(ns::W, "cellDel").is_some()) {
-                    continue;
-                }
+                // A cell deleted as a tracked change keeps its place, empty
+                // (lawkitt/mdoc#395).
+                let deleted = tcpr.is_some_and(|p| p.find(ns::W, "cellDel").is_some());
                 let covered = tcpr
                     .and_then(|p| p.find(ns::W, "vMerge"))
                     .is_some_and(|v| !matches!(v.attr(ns::W, "val"), Some("restart")));
@@ -1144,20 +1153,25 @@ fn collect_row_cells<'e>(parent: &'e Element, cells: &mut Vec<TcInfo<'e>>) {
                 let hmerge_cont = tcpr
                     .and_then(|p| p.find(ns::W, "hMerge"))
                     .is_some_and(|h| !matches!(h.attr(ns::W, "val"), Some("restart")));
+                // A continuation of a deleted origin, or a deleted
+                // continuation, widens the origin with none of its text.
                 if hmerge_cont
                     && let Some(prev) = cells.last_mut()
                     && !prev.covered
                 {
                     prev.col_span += col_span;
-                    prev.merged.push(child);
+                    if !prev.deleted && !deleted {
+                        prev.merged.push(child);
+                    }
                     continue;
                 }
                 cells.push(TcInfo {
-                    elem: Some(child),
+                    elem: (!deleted).then_some(child),
                     merged: Vec::new(),
                     col_span,
                     row_span: 1,
                     covered,
+                    deleted,
                 });
             }
             "sdt" => {
