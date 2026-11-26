@@ -22,6 +22,10 @@ struct TableBuild {
     row_props: Vec<CellProp>,
     prop_cursor: usize,
     pending_prop: CellProp,
+    /// Which of `row_props` were deleted as a tracked change (`\cldel`),
+    /// and whether the pending one is.
+    row_deleted: Vec<bool>,
+    pending_deleted: bool,
     row: RowBuild,
     row_header: bool,
 }
@@ -82,6 +86,8 @@ impl TableState {
         t.row_props.clear();
         t.prop_cursor = 0;
         t.pending_prop = CellProp::default();
+        t.row_deleted.clear();
+        t.pending_deleted = false;
         t.row_header = false;
     }
 
@@ -95,12 +101,19 @@ impl TableState {
         &mut self.table_at(depth).pending_prop
     }
 
+    /// `\cldel`: the next `\cellx`'s cell was deleted as a tracked change.
+    pub fn mark_deleted_cell(&mut self, depth: usize) {
+        self.table_at(depth).pending_deleted = true;
+    }
+
     /// `\cellxN`: seal the pending properties with the right boundary.
     pub fn declare_cell(&mut self, depth: usize, right: i64) {
         let t = self.table_at(depth);
         let mut prop = std::mem::take(&mut t.pending_prop);
         prop.right = right;
         t.row_props.push(prop);
+        let deleted = std::mem::take(&mut t.pending_deleted);
+        t.row_deleted.push(deleted);
     }
 
     /// A paragraph ended inside a cell at `depth`.
@@ -148,9 +161,14 @@ impl TableState {
         self.flush_cell_run(depth);
         // A deeper completed table belongs inside this cell.
         self.flush_into_cell(depth + 1, depth)?;
-        let blocks = std::mem::take(self.cell_block_at(depth));
+        let mut blocks = std::mem::take(self.cell_block_at(depth));
         let t = self.table_at(depth);
         let prop = t.row_props.get(t.prop_cursor).copied().unwrap_or_default();
+        // A cell deleted as a tracked change keeps its place in the row,
+        // empty (lawkitt/mdoc#373).
+        if t.row_deleted.get(t.prop_cursor).copied().unwrap_or(false) {
+            blocks.clear();
+        }
         t.prop_cursor += 1;
         t.row.cells.push((blocks, prop));
         Ok(())
